@@ -23,6 +23,7 @@ import { DEFAULT_MD_CSS, DEFAULT_MD_CSS_DARK, getThemeCss, MD_BG_CSS } from "./m
 import { requestFlameDissolveClose, playFlameMaterialize, cancelFlame } from "./flame";
 import { requestGlowDissolveClose, cancelGlowParticles, bumpGlowGen } from "./glow-particles";
 import { requestInhaleDissolveClose, playInhaleMaterialize, cancelInhaleParticles } from "./glow-particles-inhale";
+import { requestCylinderDissolveClose, cancelCylinderParticles, bumpCylinderGen } from "./glow-particles-cylinder";
 import { MAX_BLUR_PX, applyGlassBlur, parseColorToRgbInt } from "./glass";
 import { applyPanelBackground } from "./panel-bg";
 import {
@@ -834,6 +835,25 @@ export function mountNoteApp(noteId: string, preset = "") {
       /* ignore */
     }
   };
+
+  // 「旋柱消散」模式也无呼出动画：作废上一轮关闭动画遗留的延时清理，并复位
+  // 关闭动画设置在本体上的 transform / backfaceVisibility / transition（blankRoot 会清空它们，
+  // 但若在关闭动画结束前就呼出，帧循环仍在改写 transform，必须显式复位避免便签停在旋转态）。
+  const restoreCylinderSummoned = (): void => {
+    bumpCylinderGen();
+    try {
+      noteWindow.style.clipPath = "";
+      noteWindow.style.setProperty("-webkit-mask-image", "");
+      noteWindow.style.setProperty("mask-image", "");
+      noteWindow.style.opacity = "";
+      noteWindow.style.boxShadow = "";
+      noteWindow.style.transform = "";
+      noteWindow.style.backfaceVisibility = "";
+      noteWindow.style.transition = "";
+    } catch {
+      /* ignore */
+    }
+  };
   appWindow.listen("summoned", () => {
     if (collapsed) expandFromEdge(false);
     // 呼出打断进行中的关闭动画：先取消关闭（取消会复原页面、且不会触发 finish/隐藏），
@@ -841,9 +861,10 @@ export function mountNoteApp(noteId: string, preset = "") {
     if (closing) {
       closing = false;
       finished = false;
-      cancelFlame();
-      cancelGlowParticles();
-      // 关闭动画已被打断：把窗口视为“从空画面呼出”，补播呼出成形动画——
+        cancelFlame();
+        cancelGlowParticles();
+        cancelCylinderParticles();
+        // 关闭动画已被打断：把窗口视为"从空画面呼出"，补播呼出成形动画——
       // 否则 wasHidden 仍为 false（finish 未执行），呼出动画被吞掉、窗口空着。
       wasHidden = true;
     }
@@ -875,6 +896,7 @@ export function mountNoteApp(noteId: string, preset = "") {
           const intensity = s.particle_count ?? 50;
           if (s.particle_mode === "erode") playFlameMaterialize(noteWindow, intensity);
           else if (s.particle_mode === "inhale") playInhaleMaterialize(noteWindow, intensity);
+          else if (s.particle_mode === "cylinder") restoreCylinderSummoned();
           else restoreGlowSummoned();
         })
         .catch(() => {
@@ -2091,9 +2113,10 @@ export function mountNoteApp(noteId: string, preset = "") {
       closing = false;
       finished = false;
     }
-    cancelFlame();
-    cancelGlowParticles();
-    noteWindow.style.clipPath = "inset(0 0 100% 0)";
+      cancelFlame();
+      cancelGlowParticles();
+      cancelCylinderParticles();
+      noteWindow.style.clipPath = "inset(0 0 100% 0)";
     noteWindow.style.boxShadow = "none";
     wasHidden = true;
     minimizeToTray().catch((e) => console.error("最小化到托盘失败:", e));
@@ -2116,9 +2139,10 @@ export function mountNoteApp(noteId: string, preset = "") {
     // 呼出/成形动画若在播放，先立即收尾复原页面，避免两个动画同时改 clip-path / mask；
     // 同时作废任何“等待 getSettings 的待播放呼出”，确保关闭能干净接管——
     // 与“关闭被呼出打断”完全对称：双向都随时可打断对方。
-    cancelGlowParticles(); // 取消进行中的粒子光效呼出/关闭动画
-    cancelInhaleParticles(); // 取消进行中的粒子吸入呼出/关闭动画
-    cancelFlame(); // 防御：清掉任何残留的火焰动画，避免叠加
+      cancelGlowParticles(); // 取消进行中的粒子光效呼出/关闭动画
+      cancelInhaleParticles(); // 取消进行中的粒子吸入呼出/关闭动画
+      cancelCylinderParticles(); // 取消进行中的旋柱消散动画
+      cancelFlame(); // 防御：清掉任何残留的火焰动画，避免叠加
     summonSeq++; // 作废进行中的呼出（其 getSettings().then 会检查 seq 后跳过）
     closing = true;
     finished = false;
@@ -2159,6 +2183,7 @@ export function mountNoteApp(noteId: string, preset = "") {
         // 关闭动画：默认粒子光效（鸿蒙通知删除同款·与呼出共用同一套粒子）；火焰模式（设置值 "erode"，历史命名）用火焰消散；inhale=粒子吸入。
         if (s.particle_mode === "erode") requestFlameDissolveClose(finish, intensity);
         else if (s.particle_mode === "inhale") requestInhaleDissolveClose(finish, intensity);
+        else if (s.particle_mode === "cylinder") requestCylinderDissolveClose(finish, intensity);
         else requestGlowDissolveClose(finish, intensity);
       })
       .catch(() => {
