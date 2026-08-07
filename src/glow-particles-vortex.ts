@@ -622,16 +622,17 @@ function runVortex(
           + Math.sin(a * 0.012 + pseed[i]) * 0.03;
         const t = a / plife[i];                      // 寿命进度 0→1
         const shrink = t * t;                        // 吸入收缩（ease-in：先慢后快 → 旋涡内吸）
-        // 毛边（细密方向性毛尖）：圆周均匀分布 S 个细小毛尖，形状统一（细三角尖角），
-        // 轻微凸起且朝旋转反方向倾斜（顺时针旋 → 毛尖朝逆时针轻甩）——只修饰边缘，不突兀
+        // 毛边（细密方向性毛尖）：只在边缘生效（edgeW=pfrac²，中心粒子不受影响→不会成'从中心发射的链子'），
+        // 形状统一、轻微凸起且朝旋转反方向倾斜
         const S = 48;
         const spikePeriod = (Math.PI * 2) / S;
         const spikeHalf = spikePeriod * 0.3;
         let dSpike = theta % spikePeriod;
         if (dSpike > spikePeriod / 2) dSpike -= spikePeriod;
         const spikeShape = Math.max(0, 1 - Math.abs(dSpike) / spikeHalf); // 统一细三角尖角
-        const spikeR = 0.05 * spikeShape; // 毛尖径向凸起（轻微）
-        const tilt = 0.06 * spikeShape;   // 反旋转方向倾斜（轻微）
+        const edgeW = pfrac[i] * pfrac[i]; // 边缘权重：仅最外缘凸起，中心平滑
+        const spikeR = 0.05 * spikeShape * edgeW; // 毛边径向凸起（轻微、只在外缘）
+        const tilt = 0.06 * spikeShape * edgeW;   // 反旋转方向倾斜（轻微、只在外缘）
         const r = curR * (1 + spikeR) * pfrac[i] * (1 - 0.92 * shrink); // 跟随扩张/收拢 + 毛边 + 吸入
         const theta2 = theta - tilt;      // 尖刺顶点朝反方向轻甩
         const sx = cx + r * Math.cos(theta2) + Math.sin(a * 0.004 + pseed[i]) * 5;
