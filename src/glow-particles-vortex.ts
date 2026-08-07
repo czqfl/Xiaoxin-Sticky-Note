@@ -7,9 +7,9 @@
 // 视觉要点（对齐需求）：
 // - **中心点起爆、圆形扩张**：粒子化前缘为以屏幕中心为圆心的圆，半径由 0 平滑扩张至覆盖整幅
 //   （ease-out 二次曲线）；便签被圆覆盖的原始区域真正消失（mask 径向擦除，边缘羽化）。
-// - **旋转吸入（旋涡）**：粒子在圆盘外缘（比例 0.55~1）出生，绕心顺时针旋转的同时轨道半径
-//   随年龄收缩（ease-in：先慢后快）→ 被吸入中心，寿命末段在中心附近消散、重生到外缘再被吸入；
-//   粒子化前缘宽羽化，边缘柔和不成整齐圆线。
+// - **旋转吸入（旋涡）**：粒子铺满整个已粒子化圆盘（中心也有粒子、不空），绕心顺时针旋转的
+//   同时整体向中心收缩（ease-in：先慢后快 → 旋涡内吸），寿命末段在中心附近消散、重生后再被
+//   吸入；粒子化前缘宽羽化，边缘柔和不成整齐圆线。
 // - 粒子颜色**每帧按粒子实际位置采样**后面背景色（additive 辉光），随位置变化跟随后面背景。
 //
 // 工程契约：复用粒子光效基础设施（WebGL 单次 draw call 点精灵 + 颜色场 + 代次守卫 + 看门狗）；
@@ -391,25 +391,26 @@ function runVortex(
   const maxR = Math.hypot(w, h) / 2; // 最大半径：覆盖整幅（含四角）
   const omega = (Math.PI * 2 * 2) / (duration / 1000); // 粒子绕心角速度：全程约 2 圈（rad/s，顺时针）
 
-  // ---- 粒子池（SoA）：粒子出生偏向圆盘外缘（比例 0.55~1），实际半径 = 当前粒子化前缘 curR
-  // × 比例 × 吸入收缩 —— 粒子一边绕心旋转一边被吸入中心（旋涡），寿命末段在中心附近消散、
-  // 重生到外缘再被吸入；颜色每帧按粒子实际位置采样（跟随后面背景）。----
+  // ---- 粒子池（SoA）：粒子出生铺满整个已粒子化圆盘（比例 0~1 面积均匀，中心也有粒子），
+  // 实际半径 = 当前粒子化前缘 curR × 比例 × 吸入收缩 —— 粒子绕心旋转的同时整体向中心收缩
+  // （旋涡内吸），寿命末段在中心附近消散、重生后再被吸入；颜色每帧按粒子实际位置采样
+  // （跟随后面背景）。----
   const N = Math.round(4000 + density * 18000); // 涡旋密度调疏（用户反馈太稠）
   const maxP = Math.max(N + 64, 256);
   const pth = new Float32Array(maxP);    // 初始圆周角 θ₀（绕心旋转）
-  const pfrac = new Float32Array(maxP);  // 截面半径比例（0.55~1，偏外缘）；实际半径 = curR × 比例 × 收缩
+  const pfrac = new Float32Array(maxP);  // 截面半径比例（0~1 面积均匀）；实际半径 = curR × 比例 × 收缩
   const pbirth = new Float32Array(maxP); // 出生时刻（相对动画起点的 age，ms）
   const plife = new Float32Array(maxP);  // 寿命 ms
   const psize = new Float32Array(maxP);  // 基础像素尺寸
   const glData = new Float32Array(maxP * 7);
 
-  // 在已粒子化圆盘外缘重生一粒：随机角度、偏外缘比例、随机寿命（颜色在帧内按实际位置采样）
+  // 在已粒子化圆盘内重生一粒：随机角度、铺满圆盘的比例（面积均匀）、随机寿命（颜色帧内采样）
   const respawn = (i: number, atAge: number): void => {
     pbirth[i] = atAge;
     pth[i] = Math.random() * Math.PI * 2;
     plife[i] = 900 + Math.random() * 600;
     psize[i] = 2.0;
-    pfrac[i] = 0.55 + 0.45 * Math.sqrt(Math.random()); // 偏外缘出生 → 被吸入中心
+    pfrac[i] = Math.sqrt(Math.random()); // 铺满整个圆盘 → 中心也被粒子化（不空）
   };
   for (let i = 0; i < N; i++) {
     respawn(i, Math.random() * 240); // 开头 0~240ms 内陆续出生
