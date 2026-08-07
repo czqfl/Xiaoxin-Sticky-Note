@@ -479,7 +479,7 @@ function runCylinder(
     // ---- 粒子：从中心竖线持续往外冒 → 加入不断扩张的圆柱壳 → 绕轴旋转 → 持续消散 ----
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    const globalFade = age > duration - 200 ? Math.max(0, (duration - age) / 200) : 1;
+    const globalFade = age > duration - 600 ? Math.max(0, (duration - age) / 600) : 1; // 末段整体淡出，避免结尾残留中心亮柱
     let drawCount = 0;
     for (let i = 0; i < N; i++) {
       let a = age - pbirth[i];
@@ -494,10 +494,12 @@ function runCylinder(
       const s = focal / (focal - z);               // 近大远小
       const sx = cx + r * Math.sin(theta) * s;     // 屏幕 x（圆周投影）
       const sy = pyAx[i];                          // 轴向位置（沿竖轴，锁定便签顶/底边）
-      const fadeIn = Math.min(1, a / 140);         // 从轴冒出时淡入
+      const fadeIn = Math.min(1, a / 160);         // 从轴冒出时淡入
       const u = a / plife[i];
       const lifeFade = u > 0.7 ? Math.max(0, (1 - u) / 0.3) : 1; // 末段消散
-      const alpha = fadeIn * lifeFade * globalFade;
+      const radial = r / (w * 0.07);               // 距轴比例（轴→7% 半宽）
+      const coreDim = 0.12 + 0.88 * Math.min(1, radial); // 压暗轴心：避免中心始终一根亮实心柱
+      const alpha = fadeIn * lifeFade * globalFade * coreDim;
       if (alpha < 0.02) continue;
       const haloR = psize[i] * s * (0.6 + 0.4 * fadeIn);
       const o = drawCount * 7;

@@ -591,8 +591,10 @@ function runGlow(
   }
 
   // ---- 粒子池（SoA + swap-remove；初速度/加速度全粒子一致，等加速上升）----
-  const peakAlive = Math.round(6400 + density * 43000);
-  const maxP = Math.max(peakAlive + 1500, ecount + 64);
+  // 粒子数量（density）真正控制存活粒子数：peakAlive 占发射点总数的比例随 density 变化；
+  // 发射点网格（ecount，极密）仅决定每个粒子的出生位置，不直接决定粒子数。
+  const peakAlive = Math.round(ecount * (0.03 + 0.97 * density));
+  const maxP = peakAlive + 1500;
   const px = new Float32Array(maxP);
   const py = new Float32Array(maxP);
   const pang = new Float32Array(maxP);
@@ -697,6 +699,9 @@ function runGlow(
       const p = Math.min(1, (age - fadeHalf) / fadeHalf);
       root.style.opacity = (1 - 0.5 * p).toFixed(3);
     }
+    // 按粒子数量节流发射：density 越低，保留的发射点比例越小（整面均匀变稀）；
+    // 配合上面的峰值上限 maxP，粒子数随 density 在 ≈1.5%~100% 区间近似线性变化。
+    const keepProb = Math.max(0.015, density);
     const b1 = Math.min(binCount - 1, Math.floor(age / binSize));
     for (let b = 0; b <= b1; b++) {
       const pts = binPts[b];
@@ -704,7 +709,7 @@ function runGlow(
         const idx = pts[z];
         if (emitDone[idx] === 0) {
           emitDone[idx] = 1;
-          spawn(emitX[idx], emitY[idx], age);
+          if (Math.random() < keepProb) spawn(emitX[idx], emitY[idx], age);
         }
       }
     }

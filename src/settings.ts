@@ -491,8 +491,8 @@ export async function openSettingsModal(): Promise<void> {
               </div>
               <label class="settings-check"><input type="checkbox" id="set-edge-snap"> 贴边自动收起 / 弹出（QQ 风格）</label>
               <div class="settings-row" id="particle-count-row">
-                <label class="settings-label">粒子数量</label>
-                <input type="range" id="particle-count" min="0" max="100" step="1" value="50">
+                <label class="settings-label">粒子强度</label>
+                <input type="range" id="particle-count" min="1" max="100" step="1" value="50">
                 <span class="settings-val" id="particle-count-val">50</span>
               </div>
               <div class="settings-row">
