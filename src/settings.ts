@@ -573,7 +573,6 @@ export async function openSettingsModal(): Promise<void> {
         <span class="settings-msg" id="set-msg"></span>
         <button class="btn-primary" id="set-save">应用</button>
       </div>
-      <div class="settings-toast" id="set-toast" role="status" aria-live="polite"></div>
     </div>
   `;
   } catch (e) {
@@ -592,16 +591,25 @@ export async function openSettingsModal(): Promise<void> {
 
   const list = overlay.querySelector("#shortcut-list") as HTMLDivElement | null;
   const msg = overlay.querySelector("#set-msg") as HTMLSpanElement;
-  const toast = overlay.querySelector("#set-toast") as HTMLDivElement | null;
+  let toastEl: HTMLDivElement | null = null;
   let toastTimer: number | undefined;
-  // 强反馈 toast：强调色卡片 + ✓，1.8s 自动淡出；isError 时转红。明显强于原弱文字提示。
+  // 仿 Element 成功 Message：动态挂到 body（固定贴视口顶部，不受任何容器 transform 影响），
+  // 1.8s 自动淡出；失败时转红条。
   function showToast(text: string, isError = false): void {
-    if (!toast) return;
-    toast.classList.toggle("error", isError);
-    toast.textContent = (isError ? "" : "✓ ") + text;
-    toast.classList.add("show");
+    if (!toastEl) {
+      toastEl = document.createElement("div");
+      toastEl.id = "set-toast";
+      toastEl.className = "settings-toast";
+      toastEl.setAttribute("role", "status");
+      toastEl.setAttribute("aria-live", "polite");
+      document.body.appendChild(toastEl);
+    }
+    toastEl.classList.toggle("error", isError);
+    toastEl.textContent = (isError ? "" : "✓ ") + text;
+    void toastEl.offsetWidth; // 触发重排，确保过渡动画每次都重新生效
+    toastEl.classList.add("show");
     if (toastTimer !== undefined) window.clearTimeout(toastTimer);
-    toastTimer = window.setTimeout(() => toast && toast.classList.remove("show"), 1800);
+    toastTimer = window.setTimeout(() => toastEl && toastEl.classList.remove("show"), 1800);
   }
 
   if (!list) { console.error("设置面板缺少 #shortcut-list，渲染中止"); return; }

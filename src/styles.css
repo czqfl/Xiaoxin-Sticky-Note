@@ -2360,37 +2360,38 @@ body,
   color: var(--pin-on);
 }
 
-/* “应用”反馈：顶部居中的小巧胶囊提示，跟随主题色、半透明毛玻璃感，明显强于大色块 */
+/* “应用”反馈：仿 Element UI 成功 Message —— 顶部居中、浅绿底+绿字+绿边 + ✓，
+   由 JS 动态挂到 body，固定贴视口顶部，绝不盖住底部按钮。 */
 .settings-toast {
   position: fixed;
   left: 50%;
-  top: 22px;
-  transform: translateX(-50%) translateY(-14px) scale(0.96);
-  background: color-mix(in srgb, var(--bg, #2b2b33) 86%, transparent);
-  color: var(--text, #fff);
-  border: 1px solid color-mix(in srgb, var(--border, #ffffff) 28%, transparent);
-  font-size: 13px;
-  font-weight: 600;
-  padding: 9px 16px;
-  border-radius: 999px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.20);
+  top: 20px;
+  transform: translateX(-50%) translateY(-16px);
+  background: #f0f9eb;
+  color: #67c23a;
+  border: 1px solid #e1f3d8;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 10px 16px;
+  border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
   opacity: 0;
   pointer-events: none;
-  z-index: 9999;
+  z-index: 99999;
   white-space: nowrap;
   display: flex;
   align-items: center;
   gap: 7px;
-  transition: opacity 0.22s ease, transform 0.30s cubic-bezier(0.2, 0.9, 0.3, 1.25);
+  transition: opacity 0.25s ease, transform 0.30s cubic-bezier(0.2, 0.9, 0.3, 1.25);
 }
 .settings-toast.show {
   opacity: 1;
-  transform: translateX(-50%) translateY(0) scale(1);
+  transform: translateX(-50%) translateY(0);
 }
 .settings-toast.error {
-  background: #e0463e;
-  color: #fff;
-  border-color: transparent;
+  background: #fef0f0;
+  color: #f56c6c;
+  border-color: #fde2e2;
 }
 /* “应用”按钮成功态：短暂变绿 + ✓，给用户明确“已应用”的视觉确认 */
 .btn-primary.applied {
