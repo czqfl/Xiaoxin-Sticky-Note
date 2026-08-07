@@ -266,8 +266,8 @@ function runCylinder(
   const h = window.innerHeight;
   const density = Math.max(0, Math.min(100, particleDensity)) / 100;
 
-  // ---- 时序参数（整体 ~1.6s：旋转 + 粒子填充 + 透明度淡出收尾）----
-  const duration = 1600;
+  // ---- 时序参数（整体 ~1.0s：旋转 + 粒子填充 + 透明度淡出收尾）----
+  const duration = 1000;
 
   // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）----
   const canvas = document.createElement("canvas");
@@ -507,7 +507,7 @@ function runCylinder(
     // （中心亮、向外渐暗）→ 圆柱由中心向两侧逐渐完整，半径全程不变 ----
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    const globalFade = age > duration - 420 ? Math.max(0, (duration - age) / 420) : 1; // 末段整体淡出
+    const globalFade = age > duration - 260 ? Math.max(0, (duration - age) / 260) : 1; // 末段整体淡出
     let drawCount = 0;
     for (let i = 0; i < N; i++) {
       let a = age - pbirth[i];
