@@ -613,10 +613,14 @@ function runCylinder(
           respawn(i, age);
           a = 0;
         }
+        // 粒子半径随时间缓慢扩张（比便签 mask 条带慢，ease-in 先慢后快）：
+        // 粒子旋转的同时轨道半径逐渐变大，最后飘出便签矩形区域
+        const growT = age / duration;
+        const grow = 1 + 1.2 * growT * growT; // 最终 ~2.2R
         const theta = pth[i] + omega * (age / 1000); // 绕轴旋转（全部粒子同步 → 整体圆柱在转）
-        const r = prad[i];                           // 固定截面半径（0~R 均匀，全程不扩张）
+        const r = prad[i] * grow;                    // 基础截面半径 × 缓慢扩张
         const z = r * Math.cos(theta);               // 透视深度（朝观众为正）
-        const s = focal / (focal - z);               // 近大远小
+        const s = Math.min(focal / (focal - z), 3);  // 近大远小（限幅避免飘远后爆放大）
         const sx = cx + r * Math.sin(theta) * s;     // 屏幕 x（圆周投影）
         const sy = pyAx[i];                          // 轴向位置（沿竖轴，锁定便签顶/底边）
         const fadeIn = Math.min(1, a / 150);         // 出生淡入

@@ -353,6 +353,10 @@ const frame = (now: number): void => {
       drawCount++;
     }
   } else if (layerKind === "cylinder") {
+    // 粒子半径随时间缓慢扩张（比便签 mask 条带慢，ease-in 先慢后快）：
+    // 粒子在旋转的同时轨道半径逐渐变大，最后飘出便签矩形区域
+    const growT = age / duration;
+    const grow = 1 + 1.2 * growT * growT; // 最终 ~2.2R（R=0.46w → 最大半径≈便签宽，飘出左右）
     for (let i = 0; i < pcount; i++) {
       let a = age - pbirth[i];
       if (a < 0) continue;
@@ -361,9 +365,9 @@ const frame = (now: number): void => {
         a = 0;
       }
       const theta = pth[i] + omega * (age / 1000);
-      const r = prad[i];
+      const r = prad[i] * grow;
       const z = r * Math.cos(theta);
-      const s = focal / (focal - z);
+      const s = Math.min(focal / (focal - z), 3); // 近大远小（限幅避免飘远后爆放大）
       const sx = cx + r * Math.sin(theta) * s;
       const sy = py[i];
       const fadeIn = Math.min(1, a / 150);
