@@ -7,9 +7,9 @@
 // 视觉要点（对齐需求）：
 // - **中心点起爆、圆形扩张**：粒子化前缘为以屏幕中心为圆心的圆，半径由 0 平滑扩张至覆盖整幅
 //   （ease-out 二次曲线）；便签被圆覆盖的原始区域真正消失（mask 径向擦除，边缘羽化）。
-// - **已粒子化区域的粒子旋转**：粒子出生即落在已扩张圆盘内（半径 0~curR 面积均匀填充），
-//   锁定各自的截面半径绕中心顺时针旋转（刚体圆盘感：外圈线速度快、内圈慢），持续消散、
-//   在圆盘内他处重生——圆盘半径随扩张前缘固定增长，不会全堆在中心或全跑到外缘。
+// - **已粒子化区域的粒子旋转**：粒子出生时锁定一个截面半径比例（0~1，面积均匀），实际半径 =
+//   当前粒子化前缘 curR × 比例 —— 粒子始终均匀铺满整个已粒子化圆盘，随圆盘扩张一起长大、
+//   同时绕心顺时针旋转（刚体圆盘感：外圈线速度快、内圈慢），持续消散、在圆盘内他处重生。
 // - 粒子亮度 = 出生淡入 × 寿命末段淡出 × 动画末段整体淡出；颜色采样自主题色，additive 辉光。
 //
 // 工程契约：复用粒子光效基础设施（WebGL 单次 draw call 点精灵 + 颜色场 + 代次守卫 + 看门狗）；
@@ -391,13 +391,13 @@ function runVortex(
   const maxR = Math.hypot(w, h) / 2; // 最大半径：覆盖整幅（含四角）
   const omega = (Math.PI * 2 * 2) / (duration / 1000); // 粒子绕心角速度：全程约 2 圈（rad/s，顺时针）
 
-  // ---- 粒子池（SoA）：所有粒子分布在已粒子化圆盘内（半径 0~curR 面积均匀 → 实心圆盘），
-  // 每颗粒子锁定自己的截面半径绕心旋转、消散后在圆盘内他处重生——圆盘随扩张前缘长大，
-  // 不会全堆中心，也不会全跑外缘。----
+  // ---- 粒子池（SoA）：所有粒子锁定一个截面半径比例（0~1 面积均匀），实际半径 = 当前粒子化
+  // 前缘 curR × 比例 —— 粒子始终均匀铺满整个已粒子化圆盘并随扩张长大（不会全堆中心、
+  // 也不会全跑外缘），绕心旋转、消散后在圆盘内他处重生。----
   const N = Math.round(8000 + density * 38000);
   const maxP = Math.max(N + 64, 256);
   const pth = new Float32Array(maxP);    // 初始圆周角 θ₀（绕心旋转）
-  const prad = new Float32Array(maxP);   // 出生截面半径：锁定（0~curR 出生时）
+  const pfrac = new Float32Array(maxP);  // 截面半径比例（0~1，面积均匀）；实际半径 = curR × 比例
   const pbirth = new Float32Array(maxP); // 出生时刻（相对动画起点的 age，ms）
   const plife = new Float32Array(maxP);  // 寿命 ms
   const psize = new Float32Array(maxP);  // 基础像素尺寸
@@ -406,21 +406,20 @@ function runVortex(
   const pb = new Float32Array(maxP);
   const glData = new Float32Array(maxP * 7);
 
-  // 在已粒子化圆盘内重生一粒：随机截面半径（面积均匀）/角度/主题色，赋予随机寿命
-  const respawn = (i: number, atAge: number, curR: number): void => {
+  // 在已粒子化圆盘内重生一粒：随机半径比例（面积均匀）/角度/主题色，赋予随机寿命
+  const respawn = (i: number, atAge: number): void => {
     pbirth[i] = atAge;
     pth[i] = Math.random() * Math.PI * 2;
     plife[i] = 1000 + Math.random() * 700;
     psize[i] = 2.0;
-    prad[i] = curR * Math.sqrt(Math.random()); // 圆盘面积均匀 → 实心圆盘
-    const bx = cx + prad[i] * Math.cos(pth[i]);
-    const by = cy + prad[i] * Math.sin(pth[i]);
+    pfrac[i] = Math.sqrt(Math.random()); // 圆盘面积均匀 → 实心圆盘
+    const bx = cx + pfrac[i] * Math.cos(pth[i]);
+    const by = cy + pfrac[i] * Math.sin(pth[i]);
     const [r, g, b] = sampleThemeColor(bx, by);
     pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
   };
-  const initCurR = maxR * 0.05; // 起始即有一个微小圆盘（中心“点”起爆）
   for (let i = 0; i < N; i++) {
-    respawn(i, Math.random() * 240, initCurR);
+    respawn(i, Math.random() * 240); // 开头 0~240ms 内陆续出生（初始圆盘很小，粒子自然集中中心）
   }
 
   // ---- 帧循环控制 ----
@@ -505,11 +504,11 @@ function runVortex(
       let a = age - pbirth[i];
       if (a < 0) continue;            // 尚未出生
       if (a >= plife[i]) {            // 寿命到 → 在已粒子化圆盘内他处重生（不息）
-        respawn(i, age, curR);
+        respawn(i, age);
         a = 0;
       }
       const theta = pth[i] + omega * (age / 1000); // 绕心顺时针旋转（刚体圆盘）
-      const r = prad[i];                           // 锁定截面半径（不扩张、不内缩）
+      const r = curR * pfrac[i];                   // 实际半径 = 当前前缘 × 比例：随圆盘扩张长大
       const sx = cx + r * Math.cos(theta);         // 屏幕 x
       const sy = cy + r * Math.sin(theta);         // 屏幕 y
       const fadeIn = Math.min(1, a / 150);         // 出生淡入
