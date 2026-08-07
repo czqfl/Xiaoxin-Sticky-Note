@@ -352,6 +352,7 @@ function defaultSettings(): Settings {
     transparent_opacity: 65,
     particle_count: 50,
     particle_mode: "particle",
+    animation_speed: 100,
   } as Settings;
 }
 
@@ -494,6 +495,11 @@ export async function openSettingsModal(): Promise<void> {
                 <label class="settings-label">粒子强度</label>
                 <input type="range" id="particle-count" min="1" max="100" step="1" value="50">
                 <span class="settings-val" id="particle-count-val">50</span>
+              </div>
+              <div class="settings-row">
+                <label class="settings-label">动画速度</label>
+                <input type="range" id="anim-speed" min="50" max="200" step="10" value="100">
+                <span class="settings-val" id="anim-speed-val">100%</span>
               </div>
               <div class="settings-row">
                 <label class="settings-label">动画效果</label>
@@ -980,6 +986,14 @@ export async function openSettingsModal(): Promise<void> {
   particleCountSlider.addEventListener("input", () => {
     particleCountVal.textContent = particleCountSlider.value;
   });
+  // ---- 动画速度（对所有粒子动画生效：50=半速 ~ 200=2倍速，100=原速）----
+  const animSpeedSlider = overlay.querySelector("#anim-speed") as HTMLInputElement;
+  const animSpeedVal = overlay.querySelector("#anim-speed-val") as HTMLElement;
+  animSpeedSlider.value = String(draft.animation_speed ?? 100);
+  animSpeedVal.textContent = (draft.animation_speed ?? 100) + "%";
+  animSpeedSlider.addEventListener("input", () => {
+    animSpeedVal.textContent = animSpeedSlider.value + "%";
+  });
   // ---- 动画效果：particle=粒子消散（仅关闭·默认·多点起爆向外扩散；呼出直接显示）、inhale=粒子吸入（呼出+关闭，向内汇聚，独立成项便于日后分化）、erode=火焰（呼出+关闭，橙黄火舌贴燃烧边；设置值 "erode" 为历史命名）、cylinder=旋柱消散（关闭，固定半径旋转圆柱壳）、vortex=涡旋消散（关闭，中心圆点粒子化向外圆形扩张，已粒子化圆盘绕心旋转）----
   // 注意：必须先设置 value 再 enhanceSelect，否则自定义下拉的 label 会停在第一个选项上
   // （enhanceSelect 内部会立即按当前选中项渲染文本，后设 value 不会触发它重新同步）。
@@ -1297,6 +1311,7 @@ export async function openSettingsModal(): Promise<void> {
     draft.edge_snap = edgeSnapChk.checked;
     draft.particle_count = Number(particleCountSlider.value);
     draft.particle_mode = (overlay.querySelector("#set-particle-mode") as HTMLSelectElement).value;
+    draft.animation_speed = Number(animSpeedSlider.value);
     draft.llm_base_url = llmBase.value.trim();
     draft.llm_api_key = llmKey.value.trim();
     draft.llm_model = llmModel.value.trim();

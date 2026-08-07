@@ -75,8 +75,9 @@ export function bumpVortexGen(): void {
   vortexGen++;
 }
 
-/** 请求播放「涡旋消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。 */
-export function requestVortexDissolveClose(onDone: () => void, particleDensity = 50): void {
+/** 请求播放「涡旋消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。
+ * speed：动画速度百分比（100=原速），所有时序按 100/speed 缩放。 */
+export function requestVortexDissolveClose(onDone: () => void, particleDensity = 50, speed = 100): void {
   const root = document.querySelector(".note-window") as HTMLElement | null;
   if (!root || vortexActive) {
     onDone();
@@ -103,7 +104,7 @@ export function requestVortexDissolveClose(onDone: () => void, particleDensity =
     vortexActive = false;
   };
   try {
-    stopRun = runVortex(root, particleDensity, () => {
+    stopRun = runVortex(root, particleDensity, speed, () => {
       window.clearTimeout(watchdog);
       safeDone();
     });
@@ -257,6 +258,7 @@ function buildColorField(root: HTMLElement, w: number, h: number): Promise<Color
 function runVortex(
   root: HTMLElement,
   particleDensity: number,
+  speed: number,
   onDone: () => void,
 ): () => void {
   const myGen = ++vortexGen; // 本动画实例代次：作废上一轮遗留的延时清理
@@ -264,9 +266,10 @@ function runVortex(
   const w = window.innerWidth;
   const h = window.innerHeight;
   const density = Math.max(0, Math.min(100, particleDensity)) / 100;
+  const k = Math.max(0.25, Math.min(4, 100 / Math.max(10, speed))); // 速度系数：200%→0.5（时长减半）
 
   // ---- 时序参数（整体 ~1.2s：圆形扩张 + 粒子旋转 + 透明度淡出收尾）----
-  const duration = 1200;
+  const duration = Math.round(1200 * k);
 
   // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）----
   const canvas = document.createElement("canvas");
@@ -408,7 +411,7 @@ function runVortex(
   const respawn = (i: number, atAge: number): void => {
     pbirth[i] = atAge;
     pth[i] = Math.random() * Math.PI * 2;
-    plife[i] = 900 + Math.random() * 600;
+    plife[i] = Math.round((900 + Math.random() * 600) * k); // 寿命随速度缩放
     psize[i] = 2.0;
     pfrac[i] = Math.sqrt(Math.random()); // 铺满整个圆盘 → 中心也被粒子化（不空）
   };
@@ -493,7 +496,7 @@ function runVortex(
     // 在中心附近消散、重生到外缘；颜色每帧按粒子实际位置采样（跟随后面背景色）----
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    const globalFade = age > duration - 300 ? Math.max(0, (duration - age) / 300) : 1; // 末段整体淡出
+    const globalFade = age > duration - Math.round(300 * k) ? Math.max(0, (duration - age) / Math.round(300 * k)) : 1; // 末段整体淡出
     let drawCount = 0;
     for (let i = 0; i < N; i++) {
       let a = age - pbirth[i];

@@ -72,6 +72,8 @@ export interface Settings {
   particle_count?: number;
   /** 粒子效果风格：particle=粒子（呼出+关闭·默认，鸿蒙通知删除同款，颜色采样自背景主题色）/ erode=火焰（呼出+关闭，橙黄火舌贴燃烧边；设置值 "erode" 为历史命名，沿用旧值避免破坏已保存设置）。旧值 flame 已移除，归入 particle */
   particle_mode?: string;
+  /** 粒子动画速度（百分比，100=原速，50=半速，200=2倍速）；对所有粒子动画生效 */
+  animation_speed?: number;
 }
 
 export interface TranslateResult {

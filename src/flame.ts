@@ -95,8 +95,9 @@ function blankRoot(root: HTMLElement): void {
   }
 }
 
-/** 请求播放「火焰消散」关闭动画；onDone 在动画完全结束后调用（用于真正关闭窗口）。 */
-export function requestFlameDissolveClose(onDone: () => void, particleDensity = 50): void {
+/** 请求播放「火焰消散」关闭动画；onDone 在动画完全结束后调用（用于真正关闭窗口）。
+ * speed：动画速度百分比（100=原速），所有时序按 100/speed 缩放。 */
+export function requestFlameDissolveClose(onDone: () => void, particleDensity = 50, speed = 100): void {
   const root = document.querySelector(".note-window") as HTMLElement | null;
   if (!root || flaming) {
     onDone();
@@ -113,7 +114,7 @@ export function requestFlameDissolveClose(onDone: () => void, particleDensity = 
     cancelFlameFn = null;
     onDone();
   };
-  const watchdog = window.setTimeout(safeDone, 4000);
+  const watchdog = window.setTimeout(safeDone, Math.round(4000 * Math.max(0.25, Math.min(4, 100 / Math.max(10, speed)))));
   cancelFlameFn = () => {
     if (aborted) return;
     aborted = true;
@@ -123,7 +124,7 @@ export function requestFlameDissolveClose(onDone: () => void, particleDensity = 
     flaming = false;
   };
   try {
-    stopRun = runFlame(root, "dissolve", particleDensity, () => {
+    stopRun = runFlame(root, "dissolve", particleDensity, speed, () => {
       window.clearTimeout(watchdog);
       safeDone();
     });
@@ -135,7 +136,7 @@ export function requestFlameDissolveClose(onDone: () => void, particleDensity = 
 }
 
 /** 播放「火焰成形」呼出动画（关闭的倒放：顶部向下成形）；收尾自动复原页面。 */
-export function playFlameMaterialize(root: HTMLElement, particleDensity = 50): void {
+export function playFlameMaterialize(root: HTMLElement, particleDensity = 50, speed = 100): void {
   // 强制接管：若已有火焰动画在播放（快速呼出时上一轮动画未收尾、materializing 残留），
   // 先取消旧的再启动新的，杜绝「呼出被静默拒绝 → 窗口空画面永久卡死」。
   if (materializing || flaming) cancelFlame();
@@ -149,7 +150,7 @@ export function playFlameMaterialize(root: HTMLElement, particleDensity = 50): v
     materializing = false;
   };
   try {
-    stopRun = runFlame(root, "materialize", particleDensity, () => {
+    stopRun = runFlame(root, "materialize", particleDensity, speed, () => {
       /* materialize 收尾在 runFlame 内自行复原，无需额外 onDone */
     });
   } catch (e) {
@@ -212,6 +213,7 @@ function runFlame(
   root: HTMLElement,
   direction: "dissolve" | "materialize",
   particleDensity: number,
+  speed: number,
   onDone: () => void,
 ): () => void {
   const myGen = ++flameGen; // 本动画实例代次：作废上一轮遗留的延时清理
@@ -220,11 +222,12 @@ function runFlame(
   // 内容尺寸（便签本体）：动画开始前窗口尚未扩大，innerWidth/Height 即便签尺寸。
   const w = window.innerWidth;
   const h = window.innerHeight;
+  const k = Math.max(0.25, Math.min(4, 100 / Math.max(10, speed))); // 速度系数：200%→0.5（时长减半）
 
   // ---- 时序参数 ----
-  const wipe = 1000; // 消散 / 成形主体时长 ms（用户要求约 1 秒）
-  const featherMs = 90; // 羽化软边时间带宽（越大边缘越柔）
-  const tailMs = isDissolve ? 520 : 160; // 收尾余时（关闭时让火舌多停留片刻；成形更短）
+  const wipe = Math.round(1000 * k); // 消散 / 成形主体时长 ms（用户要求约 1 秒）
+  const featherMs = Math.round(90 * k); // 羽化软边时间带宽（越大边缘越柔）
+  const tailMs = Math.round((isDissolve ? 520 : 160) * k); // 收尾余时（关闭时让火舌多停留片刻；成形更短）
   const duration = wipe + tailMs;
 
   // ---- 蒙版：低分辨率逐像素 alpha（mask-size:100% 100% 上采样柔化）----

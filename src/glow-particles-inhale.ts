@@ -80,7 +80,7 @@ function blankRoot(root: HTMLElement): void {
 }
 
 /** 请求播放「粒子光效消散」关闭动画（自底向上）；onDone 在动画完全结束后调用（真正关闭窗口）。 */
-export function requestInhaleDissolveClose(onDone: () => void, particleDensity = 50): void {
+export function requestInhaleDissolveClose(onDone: () => void, particleDensity = 50, speed = 100): void {
   const root = document.querySelector(".note-window") as HTMLElement | null;
   if (!root || inhaleActive) {
     onDone();
@@ -97,7 +97,7 @@ export function requestInhaleDissolveClose(onDone: () => void, particleDensity =
     cancelInhaleFn = null;
     onDone();
   };
-  const watchdog = window.setTimeout(safeDone, 4000);
+  const watchdog = window.setTimeout(safeDone, Math.round(4000 * Math.max(0.25, Math.min(4, 100 / Math.max(10, speed)))));
   cancelInhaleFn = () => {
     if (aborted) return;
     aborted = true;
@@ -107,7 +107,7 @@ export function requestInhaleDissolveClose(onDone: () => void, particleDensity =
     inhaleActive = false;
   };
   try {
-    stopRun = runGlow(root, "dissolve", particleDensity, () => {
+    stopRun = runGlow(root, "dissolve", particleDensity, speed, () => {
       window.clearTimeout(watchdog);
       safeDone();
     });
@@ -119,7 +119,7 @@ export function requestInhaleDissolveClose(onDone: () => void, particleDensity =
 }
 
 /** 播放「粒子光效成形」呼出动画（自顶向下，关闭的倒放）；收尾自动复原页面。 */
-export function playInhaleMaterialize(root: HTMLElement, particleDensity = 50): void {
+export function playInhaleMaterialize(root: HTMLElement, particleDensity = 50, speed = 100): void {
   // 强制接管：若已有粒子吸入动画在播放（快速呼出时上一轮动画未收尾、inhaleActive 残留），
   // 先取消旧的再启动新的，杜绝「呼出被静默拒绝 → 窗口空画面永久卡死」。
   if (inhaleActive) cancelInhaleParticles();
@@ -133,7 +133,7 @@ export function playInhaleMaterialize(root: HTMLElement, particleDensity = 50): 
     inhaleActive = false;
   };
   try {
-    stopRun = runGlow(root, "materialize", particleDensity, () => {
+    stopRun = runGlow(root, "materialize", particleDensity, speed, () => {
       /* materialize 收尾在 runGlow 内自行复原，无需额外 onDone */
     });
   } catch (e) {
@@ -293,6 +293,7 @@ function runGlow(
   root: HTMLElement,
   direction: "dissolve" | "materialize",
   particleDensity: number,
+  speed: number,
   onDone: () => void,
 ): () => void {
   const myGen = ++inhaleGen; // 本动画实例代次：作废上一轮遗留的延时清理
@@ -301,12 +302,13 @@ function runGlow(
   const w = window.innerWidth;
   const h = window.innerHeight;
   const density = Math.max(0, Math.min(100, particleDensity)) / 100;
+  const k = Math.max(0.25, Math.min(4, 100 / Math.max(10, speed))); // 速度系数：200%→0.5（时长减半）
 
   // ---- 时序参数（两方向一致，保证粒子表现完全一致）----
-  const wipe = 1100; // 随机时间场 T(x,y) 主体消散/成形时长 ms（顶部+底部双起点相向推进，中央汇合）
-  const endFade = 220; // 末端全局淡出带宽，避免被强制收尾硬切
-  const duration = wipe + 280; // 总时长 ~1380ms（落在 1000-1400ms 区间）
-  const emitWindow = 560; // 每个发射点在前沿扫过后持续涌出粒子的窗口 ms（上飘拖尾，使整片消散区连贯、上下两道在中间衔接）
+  const wipe = Math.round(1100 * k); // 随机时间场 T(x,y) 主体消散/成形时长 ms（顶部+底部双起点相向推进，中央汇合）
+  const endFade = Math.round(220 * k); // 末端全局淡出带宽，避免被强制收尾硬切
+  const duration = wipe + Math.round(280 * k); // 总时长 ~1380ms（落在 1000-1400ms 区间）
+  const emitWindow = Math.round(560 * k); // 每个发射点在前沿扫过后持续涌出粒子的窗口 ms（上飘拖尾，使整片消散区连贯、上下两道在中间衔接）
 
   // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵，替代逐粒 drawImage）----
   const canvas = document.createElement("canvas");
@@ -546,7 +548,7 @@ function runGlow(
   // peakAlive + 余量；不会像旧版"每格一次性爆发"那样被早发光的边缘格子趁池未满占满，
   // 导致中央（最后才扫到）格子被拒、留下一片无粒子空白。两道扫掠得以在中间用粒子衔接。
   const peakAlive = Math.round(4300 + density * 26500); // 峰值存活粒子数（发射点更密，峰值同步放大）
-  const avgLife = 1150; // 粒子平均寿命 ms（把峰值存活换算成发射率）
+  const avgLife = Math.round(1150 * k); // 粒子平均寿命 ms（把峰值存活换算成发射率，随速度缩放）
   const maxP = peakAlive + 1500; // 余量应对节流帧瞬时多发
   const px = new Float32Array(maxP);
   const py = new Float32Array(maxP);

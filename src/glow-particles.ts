@@ -81,7 +81,7 @@ export function bumpGlowGen(): void {
 }
 
 /** 请求播放「粒子光效消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。 */
-export function requestGlowDissolveClose(onDone: () => void, particleDensity = 50): void {
+export function requestGlowDissolveClose(onDone: () => void, particleDensity = 50, speed = 100): void {
   const root = document.querySelector(".note-window") as HTMLElement | null;
   if (!root || glowActive) {
     onDone();
@@ -98,7 +98,7 @@ export function requestGlowDissolveClose(onDone: () => void, particleDensity = 5
     cancelGlowFn = null;
     onDone();
   };
-  const watchdog = window.setTimeout(safeDone, 5000);
+  const watchdog = window.setTimeout(safeDone, Math.round(5000 * Math.max(0.25, Math.min(4, 100 / Math.max(10, speed)))));
   cancelGlowFn = () => {
     if (aborted) return;
     aborted = true;
@@ -108,7 +108,7 @@ export function requestGlowDissolveClose(onDone: () => void, particleDensity = 5
     glowActive = false;
   };
   try {
-    stopRun = runGlow(root, particleDensity, () => {
+    stopRun = runGlow(root, particleDensity, speed, () => {
       window.clearTimeout(watchdog);
       safeDone();
     });
@@ -264,6 +264,7 @@ function buildColorField(root: HTMLElement, w: number, h: number): Promise<Color
 function runGlow(
   root: HTMLElement,
   particleDensity: number,
+  speed: number,
   onDone: () => void,
 ): () => void {
   const myGen = ++glowGen; // 本动画实例代次：作废上一轮遗留的延时清理
@@ -271,11 +272,12 @@ function runGlow(
   const w = window.innerWidth;
   const h = window.innerHeight;
   const density = Math.max(0, Math.min(100, particleDensity)) / 100;
+  const k = Math.max(0.25, Math.min(4, 100 / Math.max(10, speed))); // 速度系数：200%→0.5（时长减半）
 
   // ---- 时序参数（整体 ~2.4s：主体消散 1400ms + 透明度淡出收尾）
-  const wipe = 1400; // 主体消散窗口 ms
-  const secondBatchAt = 960; // 第二批区域在动画 ~40% 时起爆
-  const duration = 2400; // 总时长 ~2.4s（后半段透明度淡出代替铺满全窗）
+  const wipe = Math.round(1400 * k); // 主体消散窗口 ms
+  const secondBatchAt = Math.round(960 * k); // 第二批区域在动画 ~40% 时起爆
+  const duration = Math.round(2400 * k); // 总时长（后半段透明度淡出代替铺满全窗）
 
   // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）----
   const canvas = document.createElement("canvas");
@@ -401,7 +403,7 @@ function runGlow(
   // - 下/上各 35% 概率补充 1 点（~40% 时起爆）→ 每次 3~5 个起爆点
   // 方向性扩张速度：往上消散 > 左右消散 > 往下消散（等效距离 上×0.4/左右×1.0/下×1.8）
   // 幂函数蔓延 0.7：前沿先慢后快；花瓣状角度调制 → 扩散形状不规则（非圆形）
-  const featherMs = 70; // 羽化软边时间带宽
+  const featherMs = Math.round(70 * k); // 羽化软边时间带宽
   const maskScale = Math.max(0.18, Math.min(0.32, 120 / Math.max(w, 1))); // 目标宽 ~120px
   const mw = Math.max(8, Math.round(w * maskScale));
   const mh = Math.max(8, Math.round(h * maskScale));
@@ -614,7 +616,7 @@ function runGlow(
   // 在 (x,y) 生成一粒发光微粒；颜色采样自该生成区域的主题色。
   const spawn = (x: number, y: number, age: number): void => {
     if (pcount >= maxP) return;
-    let life = 1300 + Math.random() * 500; // 1300~1800ms
+    let life = Math.round((1300 + Math.random() * 500) * k); // 1300~1800ms（随速度缩放）
     const fit = duration - age - 40;
     if (fit < 120) return;
     if (life > fit) life = fit;

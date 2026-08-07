@@ -76,8 +76,9 @@ export function bumpCylinderGen(): void {
   cylinderGen++;
 }
 
-/** 请求播放「旋柱消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。 */
-export function requestCylinderDissolveClose(onDone: () => void, particleDensity = 50): void {
+/** 请求播放「旋柱消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。
+ * speed：动画速度百分比（100=原速），所有时序按 100/speed 缩放。 */
+export function requestCylinderDissolveClose(onDone: () => void, particleDensity = 50, speed = 100): void {
   const root = document.querySelector(".note-window") as HTMLElement | null;
   if (!root || cylinderActive) {
     onDone();
@@ -104,7 +105,7 @@ export function requestCylinderDissolveClose(onDone: () => void, particleDensity
     cylinderActive = false;
   };
   try {
-    stopRun = runCylinder(root, particleDensity, () => {
+    stopRun = runCylinder(root, particleDensity, speed, () => {
       window.clearTimeout(watchdog);
       safeDone();
     });
@@ -258,6 +259,7 @@ function buildColorField(root: HTMLElement, w: number, h: number): Promise<Color
 function runCylinder(
   root: HTMLElement,
   particleDensity: number,
+  speed: number,
   onDone: () => void,
 ): () => void {
   const myGen = ++cylinderGen; // 本动画实例代次：作废上一轮遗留的延时清理
@@ -265,9 +267,10 @@ function runCylinder(
   const w = window.innerWidth;
   const h = window.innerHeight;
   const density = Math.max(0, Math.min(100, particleDensity)) / 100;
+  const k = Math.max(0.25, Math.min(4, 100 / Math.max(10, speed))); // 速度系数：200%→0.5（时长减半）
 
   // ---- 时序参数（整体 ~1.0s：旋转 + 粒子填充 + 透明度淡出收尾）----
-  const duration = 1000;
+  const duration = Math.round(1000 * k);
 
   // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）----
   const canvas = document.createElement("canvas");
@@ -507,7 +510,7 @@ function runCylinder(
     // （中心亮、向外渐暗）→ 圆柱由中心向两侧逐渐完整，半径全程不变 ----
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    const globalFade = age > duration - 260 ? Math.max(0, (duration - age) / 260) : 1; // 末段整体淡出
+    const globalFade = age > duration - Math.round(260 * k) ? Math.max(0, (duration - age) / Math.round(260 * k)) : 1; // 末段整体淡出
     let drawCount = 0;
     for (let i = 0; i < N; i++) {
       let a = age - pbirth[i];
