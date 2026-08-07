@@ -1,5 +1,5 @@
-// 全屏透明「粒子层」窗口：负责所有粒子动画的粒子渲染（particle 粒子消散 / cylinder 旋柱 /
-// vortex 涡旋）。粒子坐标使用**屏幕坐标**（原点=屏幕左上角），因此粒子可以飘出便签窗口、
+// 全屏透明「粒子层」窗口：负责「粒子消散」动画的粒子渲染。
+// 粒子坐标使用**屏幕坐标**（原点=屏幕左上角），因此粒子可以飘出便签窗口、
 // 在整个屏幕上自由活动，不会被便签窗口的四周边框框住。
 // ----------------------------------------------------------------------------
 // 便签窗口负责 mask（便签本体擦除）+ 计时；本窗口只画粒子。参数经「particles-start」
@@ -9,7 +9,7 @@
 import { getCurrentWindow, LogicalSize, LogicalPosition } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
-type LayerKind = "particle" | "cylinder" | "vortex";
+type LayerKind = "particle";
 
 interface ParticleLayerStart {
   type: LayerKind;
@@ -49,13 +49,10 @@ let started = false;
 let lastPaint = 0;
 let layerKind: LayerKind = "particle";
 
-// ---- 粒子池（SoA；particle 模式动态增减，cylinder/vortex 固定池重生）----
+// ---- 粒子池（SoA；粒子消散模式动态增减）----
 let maxP = 1024;
 let px = new Float32Array(maxP);
 let py = new Float32Array(maxP);
-let pth = new Float32Array(maxP);    // 初始角 / 圆周角
-let prad = new Float32Array(maxP);   // cylinder: 截面半径；vortex: 半径比例
-let pbirth = new Float32Array(maxP); // 出生时刻（动画 age，ms）
 let pang = new Float32Array(maxP);
 let pv0 = new Float32Array(maxP);
 let pv1 = new Float32Array(maxP);
@@ -92,19 +89,11 @@ let tW = 8;
 let tH = 8;
 let tField: number[] = new Array(64).fill(0);
 let layerDensity = 50;
-// cylinder / vortex 几何
-let cx = 0;
-let cy = 0;
-let maxR = 500;
-let R = 200;
-let focal = 520;
-let omega = 6;
 
 const ensurePool = (n: number): void => {
   if (n <= maxP) return;
   maxP = n;
-  px = new Float32Array(maxP); py = new Float32Array(maxP); pth = new Float32Array(maxP);
-  prad = new Float32Array(maxP); pbirth = new Float32Array(maxP); pang = new Float32Array(maxP);
+  px = new Float32Array(maxP); py = new Float32Array(maxP); pang = new Float32Array(maxP);
   pv0 = new Float32Array(maxP); pv1 = new Float32Array(maxP); plife = new Float32Array(maxP);
   page = new Float32Array(maxP); psize = new Float32Array(maxP); pseed = new Float32Array(maxP);
   psway = new Float32Array(maxP); pr = new Float32Array(maxP); pg = new Float32Array(maxP);
@@ -159,36 +148,6 @@ const spawn = (sx: number, sy: number, age: number): void => {
   pseed[i] = Math.random() * Math.PI * 2;
   psway[i] = (Math.random() - 0.5) * 60;
   const [r, g, b] = sampleColor(sx - originX, sy - originY);
-  pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
-};
-
-// ---- cylinder：固定半径旋转圆柱壳（粒子铺满截面圆盘，绕竖轴透视旋转）----
-const respawnCylinder = (i: number, atAge: number): void => {
-  pbirth[i] = atAge;
-  pth[i] = Math.random() * Math.PI * 2;
-  py[i] = originY + Math.random() * rectH;
-  plife[i] = Math.round((1200 + Math.random() * 900) * k);
-  psize[i] = 1.8;
-  prad[i] = R * Math.sqrt(Math.random()); // 截面圆盘面积均匀 → 实心圆柱
-  const [r, g, b] = sampleColor(Math.random() * rectW, py[i] - originY);
-  pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
-};
-
-// ---- vortex：中心点圆形扩张 + 圆盘内粒子绕心旋转吸入 ----
-// 粒子消散式：粒子在生成位置（便签该处背景）取色，随后**带着这个颜色**旋转飘散；
-// 半径 = 当前圆盘半径 × 比例（跟随扩张铺满整个已粒子化圆盘），再向中心吸入收缩。
-const respawnVortex = (i: number, atAge: number, curR: number): void => {
-  pbirth[i] = atAge;
-  pth[i] = Math.random() * Math.PI * 2;
-  plife[i] = Math.round((900 + Math.random() * 600) * k);
-  psize[i] = 2.0;
-  pseed[i] = Math.random() * Math.PI * 2; // 扰动相位（轨迹扭曲/抖动用）
-  prad[i] = Math.sqrt(Math.random()); // 圆盘面积均匀的比例（0~1，跟随 curR 扩张）
-  // 生成处取色：出生位置（当前圆盘该半径处）对应的便签背景色
-  const r0 = curR * prad[i];
-  const sx0 = cx + r0 * Math.cos(pth[i]);
-  const sy0 = cy + r0 * Math.sin(pth[i]);
-  const [r, g, b] = sampleColor(sx0 - originX, sy0 - originY);
   pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
 };
 
@@ -260,51 +219,6 @@ function buildEmitGrid(p: ParticleLayerStart): void {
   pcount = 0;
 }
 
-function initCylinder(p: ParticleLayerStart): void {
-  rectW = Math.max(1, p.width);
-  rectH = Math.max(1, p.height);
-  originX = p.originX;
-  originY = p.originY;
-  fieldW = p.fieldW || 8;
-  fieldH = p.fieldH || 8;
-  fieldData = p.fieldData || [];
-  cx = originX + rectW / 2;
-  R = rectW * 0.46;
-  focal = R * 2.6;
-  omega = (Math.PI * 2 * 2) / (duration / 1000);
-  // layerDensity 是 0~100，粒子数计算必须先归一化（×/100），否则粒子数爆到百万级卡死
-  const d = layerDensity / 100;
-  const N = Math.round(5000 + d * 22000);
-  ensurePool(N + 64);
-  for (let i = 0; i < N; i++) {
-    respawnCylinder(i, 0); // 第一帧全部出生（fadeIn 统一淡入），避免逐个冒粒子
-  }
-  pcount = N;
-}
-
-function initVortex(p: ParticleLayerStart): void {
-  rectW = Math.max(1, p.width);
-  rectH = Math.max(1, p.height);
-  originX = p.originX;
-  originY = p.originY;
-  fieldW = p.fieldW || 8;
-  fieldH = p.fieldH || 8;
-  fieldData = p.fieldData || [];
-  cx = originX + rectW / 2;
-  cy = originY + rectH / 2;
-  maxR = Math.hypot(rectW, rectH) / 2;
-  omega = (Math.PI * 2 * 2) / (duration / 1000);
-  // layerDensity 是 0~100，粒子数计算必须先归一化（×/100），否则粒子数爆到百万级卡死
-  const d = layerDensity / 100;
-  const N = Math.round(4000 + d * 18000);
-  ensurePool(N + 64);
-  const initCurR = maxR * 0.05; // 起始前缘（5% 小圆）
-  for (let i = 0; i < N; i++) {
-    respawnVortex(i, 0, initCurR); // 第一帧全部出生（fadeIn 统一淡入）
-  }
-  pcount = N;
-}
-
 const frame = (now: number): void => {
   if (layerEnded) return;
   if (!started) {
@@ -373,96 +287,6 @@ const frame = (now: number): void => {
       glData[o + 6] = pb[i];
       drawCount++;
     }
-  } else if (layerKind === "cylinder") {
-    // 粒子半径随时间缓慢扩张（比便签 mask 条带慢，ease-in 先慢后快）：
-    // 粒子在旋转的同时轨道半径逐渐变大，最后飘出便签矩形区域
-    const growT = age / duration;
-    const grow = 1 + 1.2 * growT * growT; // 最终 ~2.2R（R=0.46w → 最大半径≈便签宽，飘出左右）
-    for (let i = 0; i < pcount; i++) {
-      let a = age - pbirth[i];
-      if (a < 0) continue;
-      if (a >= plife[i]) {
-        respawnCylinder(i, age);
-        a = 0;
-      }
-      const theta = pth[i] + omega * (age / 1000);
-      const r = prad[i] * grow;
-      const z = r * Math.cos(theta);
-      const s = Math.min(focal / (focal - z), 3); // 近大远小（限幅避免飘远后爆放大）
-      const sx = cx + r * Math.sin(theta) * s;
-      const sy = py[i];
-      const fadeIn = Math.min(1, a / 150);
-      const u = a / plife[i];
-      const lifeFade = u > 0.7 ? Math.max(0, (1 - u) / 0.3) : 1;
-      const depthShade = 0.62 + 0.38 * Math.max(0, Math.min(1, (z + r) / (2 * r)));
-      const alpha = fadeIn * lifeFade * globalFade * depthShade;
-      if (alpha < 0.02) continue;
-      const haloR = psize[i] * s * (0.6 + 0.4 * fadeIn);
-      const o = drawCount * 7;
-      glData[o] = sx * dpr;
-      glData[o + 1] = sy * dpr;
-      glData[o + 2] = haloR * 2 * dpr;
-      glData[o + 3] = alpha;
-      glData[o + 4] = pr[i];
-      glData[o + 5] = pg[i];
-      glData[o + 6] = pb[i];
-      drawCount++;
-    }
-  } else {
-    // vortex：两段式——前 40% 快速扩张到 maxR（点扩散成圆盘），后 60% 迅速收拢回中心点
-    const p = Math.min(1, age / duration);
-    let curR: number;
-    if (p < 0.4) {
-      const q = p / 0.4;
-      curR = maxR * (0.05 + 0.95 * q * (2 - q)); // ease-out 快速扩张
-    } else {
-      const q = (p - 0.4) / 0.6;
-      curR = maxR * (1 - 0.95 * q * q); // ease-in 迅速收拢回点
-    }
-    for (let i = 0; i < pcount; i++) {
-      let a = age - pbirth[i];
-      if (a < 0) continue;
-      if (a >= plife[i]) {
-        respawnVortex(i, age, curR);
-        a = 0;
-      }
-      // 轨迹扭曲：旋转角度叠加随时间变化的扰动（避免规整圆周运动，产生有机流动感）
-      const theta = pth[i] + omega * (age / 1000)
-        + Math.sin(a * 0.005 + pseed[i] * 2) * 0.05
-        + Math.sin(a * 0.012 + pseed[i]) * 0.03;
-      const t = a / plife[i];
-      const shrink = t * t;
-      // 毛边（细密方向性毛尖）：只在边缘生效（edgeW=prad²，中心粒子不受影响→不会成'从中心发射的链子'），
-      // 形状统一、轻微凸起且朝旋转反方向倾斜
-      const S = 48;
-      const spikePeriod = (Math.PI * 2) / S;
-      const spikeHalf = spikePeriod * 0.3;
-      let dSpike = theta % spikePeriod;
-      if (dSpike > spikePeriod / 2) dSpike -= spikePeriod;
-      const spikeShape = Math.max(0, 1 - Math.abs(dSpike) / spikeHalf); // 统一细三角尖角
-      const edgeW = prad[i] * prad[i]; // 边缘权重：仅最外缘凸起，中心平滑
-      const spikeR = 0.05 * spikeShape * edgeW; // 毛边径向凸起（轻微、只在外缘）
-      const tilt = 0.06 * spikeShape * edgeW;   // 反旋转方向倾斜（轻微、只在外缘）
-      const r = curR * (1 + spikeR) * prad[i] * (1 - 0.92 * shrink); // 跟随扩张/收拢 + 毛边 + 吸入
-      const theta2 = theta - tilt;      // 尖刺顶点朝反方向轻甩
-      const sx = cx + r * Math.cos(theta2) + Math.sin(a * 0.004 + pseed[i]) * 5;
-      const sy = cy + r * Math.sin(theta2) + Math.cos(a * 0.005 + pseed[i] * 1.7) * 5;
-      const fadeIn = Math.min(1, a / 150);
-      const lifeFade = t > 0.7 ? Math.max(0, (1 - t) / 0.3) : 1;
-      const alpha = fadeIn * lifeFade * globalFade;
-      if (alpha < 0.02) continue;
-      const haloR = psize[i] * (0.6 + 0.4 * fadeIn);
-      const o = drawCount * 7;
-      glData[o] = sx * dpr;
-      glData[o + 1] = sy * dpr;
-      glData[o + 2] = haloR * 2 * dpr;
-      glData[o + 3] = alpha;
-      // 粒子消散式：颜色 = 生成位置背景色，带色旋转飘散（固定跟随粒子）
-      glData[o + 4] = pr[i];
-      glData[o + 5] = pg[i];
-      glData[o + 6] = pb[i];
-      drawCount++;
-    }
   }
 
   if (drawCount > 0) {
@@ -492,16 +316,8 @@ function startLayer(p: ParticleLayerStart): void {
   layerStartAt = p.startAt ?? performance.now();
   layerDensity = Math.max(0, Math.min(100, p.density ?? 50));
   k = Math.max(0.25, Math.min(4, 100 / Math.max(10, p.speed ?? 100)));
-  if (layerKind === "particle") {
-    buildEmitGrid(p);
-    duration = Math.round(2400 * k);
-  } else if (layerKind === "cylinder") {
-    duration = Math.round(1000 * k);
-    initCylinder(p);
-  } else {
-    duration = Math.round(1200 * k);
-    initVortex(p);
-  }
+  buildEmitGrid(p);
+  duration = Math.round(2400 * k);
   layerEnded = false;
   layerActive = true;
   started = false;

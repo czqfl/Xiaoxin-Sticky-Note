@@ -507,8 +507,6 @@ export async function openSettingsModal(): Promise<void> {
                   <option value="particle">粒子消散</option>
                   <option value="inhale">粒子吸入</option>
                   <option value="erode">火焰侵蚀</option>
-                  <option value="cylinder">旋柱消散</option>
-                  <option value="vortex">涡旋消散</option>
                 </select>
               </div>
             </div>
@@ -994,15 +992,13 @@ export async function openSettingsModal(): Promise<void> {
   animSpeedSlider.addEventListener("input", () => {
     animSpeedVal.textContent = animSpeedSlider.value + "%";
   });
-  // ---- 动画效果：particle=粒子消散（仅关闭·默认·多点起爆向外扩散；呼出直接显示）、inhale=粒子吸入（呼出+关闭，向内汇聚，独立成项便于日后分化）、erode=火焰（呼出+关闭，橙黄火舌贴燃烧边；设置值 "erode" 为历史命名）、cylinder=旋柱消散（关闭，固定半径旋转圆柱壳）、vortex=涡旋消散（关闭，中心圆点粒子化向外圆形扩张，已粒子化圆盘绕心旋转）----
+  // ---- 动画效果：particle=粒子消散（仅关闭·默认·多点起爆向外扩散；呼出直接显示）、inhale=粒子吸入（呼出+关闭，向内汇聚，独立成项便于日后分化）、erode=火焰（呼出+关闭，橙黄火舌贴燃烧边；设置值 "erode" 为历史命名）----
   // 注意：必须先设置 value 再 enhanceSelect，否则自定义下拉的 label 会停在第一个选项上
   // （enhanceSelect 内部会立即按当前选中项渲染文本，后设 value 不会触发它重新同步）。
   const particleModeSel = overlay.querySelector("#set-particle-mode") as HTMLSelectElement;
   particleModeSel.value =
     draft.particle_mode === "erode" ? "erode" :
-    draft.particle_mode === "inhale" ? "inhale" :
-    draft.particle_mode === "cylinder" ? "cylinder" :
-    draft.particle_mode === "vortex" ? "vortex" : "particle";
+    draft.particle_mode === "inhale" ? "inhale" : "particle";
   enhanceSelect(particleModeSel);
   // ---- 粒子数量仅在「粒子吸入 / 粒子消散」时显示；火焰不使用该数值 ----
   const particleCountRow = overlay.querySelector("#particle-count-row") as HTMLElement;

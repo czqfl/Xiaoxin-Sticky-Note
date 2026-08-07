@@ -23,8 +23,6 @@ import { DEFAULT_MD_CSS, DEFAULT_MD_CSS_DARK, getThemeCss, MD_BG_CSS } from "./m
 import { requestFlameDissolveClose, playFlameMaterialize, cancelFlame } from "./flame";
 import { requestGlowDissolveClose, cancelGlowParticles, bumpGlowGen } from "./glow-particles";
 import { requestInhaleDissolveClose, playInhaleMaterialize, cancelInhaleParticles } from "./glow-particles-inhale";
-import { requestCylinderDissolveClose, cancelCylinderParticles, bumpCylinderGen } from "./glow-particles-cylinder";
-import { requestVortexDissolveClose, cancelVortexParticles, bumpVortexGen } from "./glow-particles-vortex";
 import { MAX_BLUR_PX, applyGlassBlur, parseColorToRgbInt } from "./glass";
 import { applyPanelBackground } from "./panel-bg";
 import {
@@ -842,41 +840,6 @@ export function mountNoteApp(noteId: string, preset = "") {
     }
   };
 
-  // 「旋柱消散」模式也无呼出动画：作废上一轮关闭动画遗留的延时清理，并复位
-  // 关闭动画设置在本体上的 transform / backfaceVisibility / transition（blankRoot 会清空它们，
-  // 但若在关闭动画结束前就呼出，帧循环仍在改写 transform，必须显式复位避免便签停在旋转态）。
-  const restoreCylinderSummoned = (): void => {
-    bumpCylinderGen();
-    try {
-      noteWindow.style.clipPath = "";
-      noteWindow.style.setProperty("-webkit-mask-image", "");
-      noteWindow.style.setProperty("mask-image", "");
-      noteWindow.style.opacity = "";
-      noteWindow.style.boxShadow = "";
-      noteWindow.style.transform = "";
-      noteWindow.style.backfaceVisibility = "";
-      noteWindow.style.transition = "";
-    } catch {
-      /* ignore */
-    }
-  };
-
-  // 「涡旋消散」模式同样无呼出动画：作废上一轮关闭动画遗留的延时清理并复位 mask/透明度。
-  const restoreVortexSummoned = (): void => {
-    bumpVortexGen();
-    try {
-      noteWindow.style.clipPath = "";
-      noteWindow.style.setProperty("-webkit-mask-image", "");
-      noteWindow.style.setProperty("mask-image", "");
-      noteWindow.style.opacity = "";
-      noteWindow.style.boxShadow = "";
-      noteWindow.style.transform = "";
-      noteWindow.style.backfaceVisibility = "";
-      noteWindow.style.transition = "";
-    } catch {
-      /* ignore */
-    }
-  };
   appWindow.listen("summoned", () => {
     // 呼出：恢复保存状态提示的显示（关闭动画期间的抑制结束）
     suppressSaveStatus = false;
@@ -888,8 +851,6 @@ export function mountNoteApp(noteId: string, preset = "") {
       finished = false;
         cancelFlame();
         cancelGlowParticles();
-        cancelCylinderParticles();
-        cancelVortexParticles();
         // 关闭动画已被打断：把窗口视为"从空画面呼出"，补播呼出成形动画——
       // 否则 wasHidden 仍为 false（finish 未执行），呼出动画被吞掉、窗口空着。
       wasHidden = true;
@@ -923,8 +884,6 @@ export function mountNoteApp(noteId: string, preset = "") {
           const speed = s.animation_speed ?? 100;
           if (s.particle_mode === "erode") playFlameMaterialize(noteWindow, intensity, speed);
           else if (s.particle_mode === "inhale") playInhaleMaterialize(noteWindow, intensity, speed);
-          else if (s.particle_mode === "cylinder") restoreCylinderSummoned();
-          else if (s.particle_mode === "vortex") restoreVortexSummoned();
           else restoreGlowSummoned();
         })
         .catch(() => {
@@ -2143,8 +2102,6 @@ export function mountNoteApp(noteId: string, preset = "") {
     }
       cancelFlame();
       cancelGlowParticles();
-      cancelCylinderParticles();
-      cancelVortexParticles();
       noteWindow.style.clipPath = "inset(0 0 100% 0)";
     noteWindow.style.boxShadow = "none";
     wasHidden = true;
@@ -2172,8 +2129,6 @@ export function mountNoteApp(noteId: string, preset = "") {
     // 与“关闭被呼出打断”完全对称：双向都随时可打断对方。
       cancelGlowParticles(); // 取消进行中的粒子光效呼出/关闭动画
       cancelInhaleParticles(); // 取消进行中的粒子吸入呼出/关闭动画
-      cancelCylinderParticles(); // 取消进行中的旋柱消散动画
-      cancelVortexParticles(); // 取消进行中的涡旋消散动画
       cancelFlame(); // 防御：清掉任何残留的火焰动画，避免叠加
     summonSeq++; // 作废进行中的呼出（其 getSettings().then 会检查 seq 后跳过）
     closing = true;
@@ -2216,9 +2171,7 @@ export function mountNoteApp(noteId: string, preset = "") {
         // 关闭动画：默认粒子光效（鸿蒙通知删除同款·与呼出共用同一套粒子）；火焰模式（设置值 "erode"，历史命名）用火焰消散；inhale=粒子吸入。
         if (s.particle_mode === "erode") requestFlameDissolveClose(finish, intensity, speed);
         else if (s.particle_mode === "inhale") requestInhaleDissolveClose(finish, intensity, speed);
-        // cylinder/vortex/particle：用全屏透明粒子层窗口渲染，粒子不被窗口框住（remote=true）
-        else if (s.particle_mode === "cylinder") requestCylinderDissolveClose(finish, intensity, speed, true);
-        else if (s.particle_mode === "vortex") requestVortexDissolveClose(finish, intensity, speed, true);
+        // particle（默认粒子消散）：用全屏透明粒子层窗口渲染，粒子不被窗口框住（remote=true）
         else requestGlowDissolveClose(finish, intensity, speed, true);
       })
       .catch(() => {
