@@ -4,9 +4,9 @@
 // 呼出时不播放动画：直接复原便签显示（见 note.ts summoned 处理）。
 //
 // 视觉要点（对齐需求）：
-// - **固定半径旋转圆柱**：粒子全部落在圆柱截面半径 R（固定、绝不扩张）的外壳上，分布于不同
-//   轴向/角度位置，绕轴同步旋转、持续消散、在壳上他处重生——圆柱形态全程一致，最后即为完整的
-//   旋转粒子圆柱（原著）。
+// - **固定半径实心圆柱**：粒子分布在圆柱截面圆盘内（半径 0~R 均匀填充），每颗粒子锁定一个固定
+//   截面半径绕轴旋转、持续消散、在截面内他处重生——圆柱半径固定不变、形态为实心旋转圆柱（原著），
+//   不会只有一层外圈壳。
 // - **便签从中心向两侧粒子化**：遮罩竖带由中心线向两侧扩展至整幅，被覆盖的原始便签区域真正消失
 //   （变为粒子）；粒子亮度与该处“已被粒子化”的程度同步（中心亮、向外渐暗）→ 粒子化由中间向
 //   两边蔓延，最后整个圆柱完整显现；仅后 50% 动画时间再让剩余便签整体轻微透明（100% → 65%）。
@@ -393,8 +393,9 @@ function runCylinder(
   const erodeDur = duration * 0.8;  // 便签被粒子化（从中心向两侧被吃光）的进度时长
   const omega = (Math.PI * 2 * 2) / (duration / 1000); // 绕轴角速度：全程约 2 圈（rad/s）
 
-  // ---- 粒子池（SoA）：所有粒子始终落在固定半径 R 的外壳上（不同轴向/角度位置），绕轴旋转、
-  // 消散后在他处重生——圆柱半径固定不变，不存在“扩张”，也就没有中心小圆柱（无粒子生于半径≈0）。----
+  // ---- 粒子池（SoA）：所有粒子分布在固定半径 R 的圆柱截面圆盘内（半径 0~R 均匀填充 → 实心圆柱），
+  // 每颗粒子锁定自己的固定半径绕轴旋转、消散后在他处重生——圆柱半径固定不变，不存在“扩张”，
+  // 整柱均匀填充，不会只有一层外圈壳，也没有突兀的中心小圆柱。----
   // 旋柱相对其他模式略弱：density 系数 43000→32000（仅本模式，其他模式不动）
   const N = Math.round(6400 + density * 32000);
   const maxP = Math.max(N + 64, 256);
@@ -404,13 +405,13 @@ function runCylinder(
   const plife = new Float32Array(maxP);  // 寿命 ms
   const psize = new Float32Array(maxP);  // 基础像素尺寸
   const pseed = new Float32Array(maxP);  // 随机相位（微抖动）
-  const prad = new Float32Array(maxP);   // 出生半径：固定 R ± 4% 抖动（全都在外壳上）
+  const prad = new Float32Array(maxP);   // 出生截面半径：固定 0~R（圆盘均匀填充，实心）
   const pr = new Float32Array(maxP);
   const pg = new Float32Array(maxP);
   const pb = new Float32Array(maxP);
   const glData = new Float32Array(maxP * 7);
 
-  // 在固定半径外壳上重生一粒：随机轴向位置/角度/主题色，赋予随机寿命（半径始终≈R）
+  // 在圆柱截面内重生一粒：随机截面半径/轴向位置/角度/主题色，赋予随机寿命（半径固定不扩张）
   const respawn = (i: number, atAge: number): void => {
     pbirth[i] = atAge;
     pyAx[i] = Math.random() * h;
@@ -418,7 +419,7 @@ function runCylinder(
     plife[i] = 1200 + Math.random() * 900;
     psize[i] = 1.8;
     pseed[i] = Math.random() * Math.PI * 2;
-    prad[i] = R * (0.96 + Math.random() * 0.08); // 外壳 ±4%
+    prad[i] = R * Math.sqrt(Math.random()); // 圆盘面积均匀 → 实心圆柱截面填充
     const [r, g, b] = sampleThemeColor(cx + (Math.random() - 0.5) * w * 0.4, pyAx[i]);
     pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
   };
@@ -502,7 +503,7 @@ function runCylinder(
       root.style.maskImage = maskCss;
     }
 
-    // ---- 粒子：固定半径 R 的外壳上旋转、消散、重生；亮度与该处“已被粒子化”的程度同步
+    // ---- 粒子：固定半径 R 的圆柱截面内旋转、消散、重生；亮度与该处“已被粒子化”的程度同步
     // （中心亮、向外渐暗）→ 圆柱由中心向两侧逐渐完整，半径全程不变 ----
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
@@ -516,7 +517,7 @@ function runCylinder(
         a = 0;
       }
       const theta = pth[i] + omega * (age / 1000); // 绕轴旋转（全部粒子同步 → 整体圆柱在转）
-      const r = prad[i];                           // 固定半径（≈R，全程不扩张）
+      const r = prad[i];                           // 固定截面半径（0~R 均匀，全程不扩张）
       const z = r * Math.cos(theta);               // 透视深度（朝观众为正）
       const s = focal / (focal - z);               // 近大远小
       const sx = cx + r * Math.sin(theta) * s;     // 屏幕 x（圆周投影）
