@@ -549,9 +549,11 @@ function runVortex(
       start = now;
     }
     const age = now - start;
-    // 粒子化前缘：圆心半径由 0 平滑扩张至 maxR（ease-out 二次曲线：先快后慢）
+    // 粒子化前缘：圆心半径由 5% 平滑扩张至 maxR（ease-out 二次曲线：先快后慢）。
+    // 公式必须与全屏粒子层窗口的 vortex 完全一致（0.05 + 0.95*p*(2-p)），
+    // 保证便签被粒子化的圆与粒子分布圆半径位置对应、速度同步。
     const p = Math.min(1, age / duration);
-    const curR = maxR * (p * (2 - p));
+    const curR = maxR * (0.05 + 0.95 * p * (2 - p));
 
     // ---- 便签本体：保持静止。靠 mask 把“已被粒子化的圆形区域”真正擦成透明（消失），
     // 而非整体变透明；仅后半段（后 50% 动画时间）再让剩余便签轻微透明（100% → 65%）。----
