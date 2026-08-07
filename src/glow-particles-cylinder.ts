@@ -386,17 +386,18 @@ function runCylinder(
 
   // ---- 圆柱几何参数 ----
   const cx = w / 2;                 // 竖直中轴（屏幕水平中心）
-  const R = w * 0.46;               // 圆柱半径（地面径向，略小于半宽留边）
-  const focal = R * 2.6;            // 透视焦距：近大远小
+  const R = w * 0.46;               // 名义半径：仅用于推导透视焦距
+  const focal = R * 2.6;            // 透视焦距：近大远小（前大后小）
+  const maxR = w * 0.5;             // 粒子寿命内最大径向位移（≈半宽，超出屏幕即被裁）
+  const vR = maxR / 1700;           // 径向扩张速度（px/ms）：粒子持续向外→圆柱不断扩张
   const omega = (Math.PI * 2 * 2) / (duration / 1000); // 绕轴角速度：全程约 2 圈（rad/s）
-  const growMs = 900;               // 粒子从轴发散到表面的时长
 
-  // ---- 粒子池（SoA）：全部粒子预先分配并错峰出生，一次消散 ----
+  // ---- 粒子池（SoA）：粒子从中心轴持续往外冒、持续消散（死亡即原地重生，形成不息的喷泉）----
   const N = Math.round(6400 + density * 43000);
   const maxP = Math.max(N + 64, 256);
   const pth = new Float32Array(maxP);    // 当前圆周角 θ
   const pyAx = new Float32Array(maxP);   // 轴向位置（屏幕 y，0~h）
-  const pbirth = new Float32Array(maxP); // 出生延迟（错峰从轴发散）
+  const pbirth = new Float32Array(maxP); // 出生时刻（相对动画起点的 age，ms）
   const plife = new Float32Array(maxP);  // 寿命 ms
   const psize = new Float32Array(maxP);  // 基础像素尺寸
   const pseed = new Float32Array(maxP);  // 随机相位（微抖动）
@@ -404,16 +405,20 @@ function runCylinder(
   const pg = new Float32Array(maxP);
   const pb = new Float32Array(maxP);
   const glData = new Float32Array(maxP * 7);
-  for (let i = 0; i < N; i++) {
-    pth[i] = Math.random() * Math.PI * 2;
+
+  // 在轴上重生一粒：从中心竖线冒出，随机轴向位置/角度/主题色，赋予随机寿命
+  const respawn = (i: number, atAge: number): void => {
+    pbirth[i] = atAge;
     pyAx[i] = Math.random() * h;
-    pbirth[i] = Math.random() * duration * 0.35; // 错峰出生
-    plife[i] = 1200 + Math.random() * 700;
+    pth[i] = Math.random() * Math.PI * 2;
+    plife[i] = 1100 + Math.random() * 900;
     psize[i] = 1.8;
     pseed[i] = Math.random() * Math.PI * 2;
-    // 采样靠近轴的主题色（径向生长起点在轴上）
     const [r, g, b] = sampleThemeColor(cx + (Math.random() - 0.5) * w * 0.4, pyAx[i]);
     pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
+  };
+  for (let i = 0; i < N; i++) {
+    respawn(i, Math.random() * 260); // 起始即铺满喷泉（随后靠死亡重生维持不息）
   }
 
   // ---- 帧循环控制 ----
@@ -464,38 +469,35 @@ function runCylinder(
     }
     const age = now - start;
 
-    // ---- 便签本体绕竖轴旋转（圆柱侧面）+ 后段淡出 ----
-    const spinDeg = (age / duration) * 720; // 约 2 圈
-    root.style.transform = `perspective(900px) rotateY(${spinDeg}deg)`;
-    root.style.backfaceVisibility = "hidden";
-    root.style.transition = "none";
-    const fadeStart = duration * 0.55;
+    // ---- 便签本体：保持静止，仅随消散淡出（不旋转！旋转的是粒子圆柱）----
+    const fadeStart = duration * 0.35;
     if (age > fadeStart) {
       const p = Math.min(1, (age - fadeStart) / (duration - fadeStart));
       root.style.opacity = (1 - p).toFixed(3);
     }
 
-    // ---- 粒子：从轴发散到圆周 + 绕轴旋转 + 透视投影 ----
+    // ---- 粒子：从中心竖线持续往外冒 → 加入不断扩张的圆柱壳 → 绕轴旋转 → 持续消散 ----
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     const globalFade = age > duration - 200 ? Math.max(0, (duration - age) / 200) : 1;
     let drawCount = 0;
     for (let i = 0; i < N; i++) {
-      const a = age - pbirth[i];
-      if (a < 0) continue; // 未出生
-      const life = plife[i];
-      const u = a / life;
-      if (u >= 1) continue; // 已消亡
-      const theta = pth[i] + omega * (age / 1000); // 随轴旋转（与便签 rotateY 同步）
-      const grow = Math.min(1, a / growMs);         // 半径 0→R（从轴发散）
-      const r = R * grow;
-      const z = r * Math.cos(theta);                // 透视深度（朝观众为正）
-      const s = focal / (focal - z);                // 近大远小
-      const sx = cx + r * Math.sin(theta) * s;      // 屏幕 x（圆周投影）
-      const sy = pyAx[i];                           // 轴向位置（沿竖轴）
-      const fadeIn = Math.min(1, a / 120);          // 出生放大淡入
-      const t = 1 - u;
-      const alpha = fadeIn * t * t * globalFade;    // 末段 + 寿命淡出
+      let a = age - pbirth[i];
+      if (a < 0) continue;            // 尚未冒出
+      if (a >= plife[i]) {            // 寿命到 → 原地重生（不息喷泉）
+        respawn(i, age);
+        a = 0;
+      }
+      const theta = pth[i] + omega * (age / 1000); // 绕轴旋转（全部粒子同步 → 整体圆柱在转）
+      const r = vR * a;                            // 半径随时间持续向外扩张（圆柱不断变大）
+      const z = r * Math.cos(theta);               // 透视深度（朝观众为正）
+      const s = focal / (focal - z);               // 近大远小
+      const sx = cx + r * Math.sin(theta) * s;     // 屏幕 x（圆周投影）
+      const sy = pyAx[i];                          // 轴向位置（沿竖轴，锁定便签顶/底边）
+      const fadeIn = Math.min(1, a / 140);         // 从轴冒出时淡入
+      const u = a / plife[i];
+      const lifeFade = u > 0.7 ? Math.max(0, (1 - u) / 0.3) : 1; // 末段消散
+      const alpha = fadeIn * lifeFade * globalFade;
       if (alpha < 0.02) continue;
       const haloR = psize[i] * s * (0.6 + 0.4 * fadeIn);
       const o = drawCount * 7;
@@ -539,10 +541,7 @@ function runCylinder(
 
   const beginLoop = (): void => {
     if (endedLocal) return;
-    // 首帧前先把便签切到旋转初始态，避免“静止一帧”突兀
-    root.style.transform = "perspective(900px) rotateY(0deg)";
-    root.style.backfaceVisibility = "hidden";
-    root.style.transition = "none";
+    // 便签本体保持静止（不旋转），仅由粒子层作旋转圆柱；直接开帧即可
     rafId = requestAnimationFrame(step);
   };
 
