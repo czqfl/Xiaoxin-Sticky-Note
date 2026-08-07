@@ -34,7 +34,7 @@
         "label": "particles",
         "title": "粒子层",
         "url": "index.html",
-        "visible": true,
+        "visible": false,
         "transparent": true,
         "decorations": false,
         "alwaysOnTop": true,
