@@ -403,6 +403,9 @@ struct Settings {
     /// 粒子效果风格：flame=火焰消散（默认）/ erode=侵蚀消散（烧纸/酸蚀，羽化软边）。
     #[serde(default = "default_particle_mode")]
     particle_mode: String,
+    /// 粒子动画速度（百分比，100=原速，50=半速，200=2倍速）：对所有粒子动画生效。
+    #[serde(default = "default_animation_speed")]
+    animation_speed: f64,
 }
 
 fn default_bg_glass_opacity() -> f64 {
@@ -427,6 +430,10 @@ fn default_particle_count() -> f64 {
 
 fn default_particle_mode() -> String {
     "flame".into()
+}
+
+fn default_animation_speed() -> f64 {
+    100.0
 }
 
 impl Default for Settings {
@@ -468,6 +475,7 @@ impl Default for Settings {
             transparent_opacity: 65.0,
             particle_count: 50.0,
             particle_mode: "flame".into(),
+            animation_speed: 100.0,
         }
     }
 }
