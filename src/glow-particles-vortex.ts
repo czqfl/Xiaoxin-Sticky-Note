@@ -480,7 +480,7 @@ function runVortex(
   let plife = new Float32Array(0);  // 寿命 ms
   let psize = new Float32Array(0);  // 基础像素尺寸
   let glData = new Float32Array(0);
-  let respawn: (i: number, atAge: number, curR: number) => void = () => {};
+  let respawn: (i: number, atAge: number) => void = () => {};
   if (!remote) {
     N = Math.round(4000 + density * 18000); // 涡旋密度调疏（用户反馈太稠）
     const maxP = Math.max(N + 64, 256);
@@ -491,16 +491,16 @@ function runVortex(
     psize = new Float32Array(maxP);
     glData = new Float32Array(maxP * 7);
 
-    // 在粒子化前缘重生一粒：随机角度、出生在前缘附近（便签正在消散的位置），随机寿命（颜色帧内采样）
-    respawn = (i: number, atAge: number, curR: number): void => {
+    // 在已粒子化圆盘内重生一粒：随机角度、铺满圆盘的比例（面积均匀）、随机寿命（颜色帧内采样）
+    respawn = (i: number, atAge: number): void => {
       pbirth[i] = atAge;
       pth[i] = Math.random() * Math.PI * 2;
       plife[i] = Math.round((900 + Math.random() * 600) * k); // 寿命随速度缩放
       psize[i] = 2.0;
-      pfrac[i] = curR * (0.85 + 0.15 * Math.random()); // 出生在前缘（0.85~1.0 × curR）
+      pfrac[i] = Math.sqrt(Math.random()); // 铺满整个圆盘 → 中心也被粒子化（不空）
     };
     for (let i = 0; i < N; i++) {
-      respawn(i, 0, maxR * 0.05); // 起始前缘 5%（fadeIn 统一淡入）
+      respawn(i, 0); // 第一帧全部出生（fadeIn 统一淡入）
     }
   }
 
@@ -589,18 +589,18 @@ function runVortex(
       for (let i = 0; i < N; i++) {
         let a = age - pbirth[i];
         if (a < 0) continue;            // 尚未出生
-        if (a >= plife[i]) {            // 寿命到 → 在前缘重生（不息）
-          respawn(i, age, curR);
+        if (a >= plife[i]) {            // 寿命到 → 在圆盘外缘重生（不息）
+          respawn(i, age);
           a = 0;
         }
         const theta = pth[i] + omega * (age / 1000); // 绕心顺时针旋转
         const t = a / plife[i];                      // 寿命进度 0→1
-        const shrink = Math.pow(t, 0.7);             // 先快后慢向中心回收（粒子尽快到达中心形成粒子圈）
-        const r = pfrac[i] * (1 - 0.97 * shrink);    // 锁定出生半径、深回收至中心附近
+        const shrink = t * t;                        // 吸入收缩（ease-in：先慢后快 → 旋涡内吸）
+        const r = curR * pfrac[i] * (1 - 0.92 * shrink); // 轨道半径随年龄向中心收缩
         const sx = cx + r * Math.cos(theta);         // 屏幕 x
         const sy = cy + r * Math.sin(theta);         // 屏幕 y
         const fadeIn = Math.min(1, a / 150);         // 出生淡入
-        const lifeFade = t > 0.85 ? Math.max(0, (1 - t) / 0.15) : 1; // 在中心停留更久再淡出
+        const lifeFade = t > 0.7 ? Math.max(0, (1 - t) / 0.3) : 1; // 末段消散
         const alpha = fadeIn * lifeFade * globalFade;
         if (alpha < 0.02) continue;
         const col = sampleThemeColor(sx, sy);        // 每帧按实际位置采样背景色

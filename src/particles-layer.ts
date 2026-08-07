@@ -170,14 +170,15 @@ const respawnCylinder = (i: number, atAge: number): void => {
   pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
 };
 
-// ---- vortex：粒子在「粒子化前缘」（圆半径 curR 处）生成，随后旋转向中心回收（吸入旋涡）----
-const respawnVortex = (i: number, atAge: number, curR: number): void => {
+// ---- vortex：中心点圆形扩张 + 圆盘内粒子绕心旋转吸入 ----
+const respawnVortex = (i: number, atAge: number): void => {
   pbirth[i] = atAge;
   pth[i] = Math.random() * Math.PI * 2;
   plife[i] = Math.round((900 + Math.random() * 600) * k);
   psize[i] = 2.0;
-  // 出生在前缘附近（0.85~1.0 × curR）：便签正在消散的位置生成粒子
-  prad[i] = curR * (0.85 + 0.15 * Math.random());
+  prad[i] = Math.sqrt(Math.random()); // 铺满整个圆盘（中心也有粒子）
+  const [r, g, b] = sampleColor(Math.random() * rectW, Math.random() * rectH);
+  pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
 };
 
 function stopLayer(): void {
@@ -286,9 +287,8 @@ function initVortex(p: ParticleLayerStart): void {
   const d = layerDensity / 100;
   const N = Math.round(4000 + d * 18000);
   ensurePool(N + 64);
-  const initCurR = maxR * 0.05; // 起始前缘（5% 小圆）
   for (let i = 0; i < N; i++) {
-    respawnVortex(i, 0, initCurR); // 第一帧全部在前缘出生（fadeIn 统一淡入）
+    respawnVortex(i, 0); // 第一帧全部出生（fadeIn 统一淡入）
   }
   pcount = N;
 }
@@ -397,7 +397,7 @@ const frame = (now: number): void => {
       drawCount++;
     }
   } else {
-    // vortex：粒子在前缘（curR）生成 → 锁定出生半径、旋转同时向中心回收（吸入旋涡）
+    // vortex
     const p = Math.min(1, age / duration);
     // 起始即有一个小圆盘（5% maxR），避免粒子全挤在圆心一个点 additive 叠加成刺眼白斑
     const curR = maxR * (0.05 + 0.95 * p * (2 - p));
@@ -405,17 +405,17 @@ const frame = (now: number): void => {
       let a = age - pbirth[i];
       if (a < 0) continue;
       if (a >= plife[i]) {
-        respawnVortex(i, age, curR); // 在前缘重生
+        respawnVortex(i, age);
         a = 0;
       }
       const theta = pth[i] + omega * (age / 1000);
       const t = a / plife[i];
-      const shrink = Math.pow(t, 0.7); // 先快后慢向中心回收（粒子尽快到达中心形成粒子圈）
-      const r = prad[i] * (1 - 0.97 * shrink); // 锁定出生半径、深回收至中心附近
+      const shrink = t * t;
+      const r = curR * prad[i] * (1 - 0.92 * shrink);
       const sx = cx + r * Math.cos(theta);
       const sy = cy + r * Math.sin(theta);
       const fadeIn = Math.min(1, a / 150);
-      const lifeFade = t > 0.85 ? Math.max(0, (1 - t) / 0.15) : 1; // 在中心停留更久再淡出
+      const lifeFade = t > 0.7 ? Math.max(0, (1 - t) / 0.3) : 1;
       const alpha = fadeIn * lifeFade * globalFade;
       if (alpha < 0.02) continue;
       const col = sampleColor(sx - originX, sy - originY);
