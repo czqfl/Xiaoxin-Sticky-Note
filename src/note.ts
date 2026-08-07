@@ -171,6 +171,9 @@ export function mountNoteApp(noteId: string, preset = "") {
   const btnSettings = document.getElementById("btn-settings")!;
   const titleInput = document.getElementById("note-title") as HTMLInputElement;
   const saveStatus = document.getElementById("save-status") as HTMLElement | null;
+  // 关闭动画期间抑制「保存中/已保存」状态提示（关闭会触发一次保存，但不应打扰关闭过程）；
+  // 呼出/正常编辑时恢复显示。
+  let suppressSaveStatus = false;
   const btnTranslate = document.getElementById("btn-translate")!;
   const btnCopy = document.getElementById("btn-copy") as HTMLButtonElement;
   const toolFg = document.getElementById("tool-fg") as HTMLInputElement;
@@ -601,8 +604,10 @@ export function mountNoteApp(noteId: string, preset = "") {
   }
 
   // 自动保存状态提示：输入停顿后短暂显示「保存中…」→「已保存」（或「保存失败」）。
+  // 关闭动画期间 suppressSaveStatus 为真时跳过显示（保存照常执行）。
   let savedStatusTimer: number | undefined;
   function setSaveStatus(text: string, isError = false) {
+    if (suppressSaveStatus) return;
     if (!saveStatus) return;
     saveStatus.textContent = text;
     saveStatus.classList.toggle("error", isError);
@@ -873,6 +878,8 @@ export function mountNoteApp(noteId: string, preset = "") {
     }
   };
   appWindow.listen("summoned", () => {
+    // 呼出：恢复保存状态提示的显示（关闭动画期间的抑制结束）
+    suppressSaveStatus = false;
     if (collapsed) expandFromEdge(false);
     // 呼出打断进行中的关闭动画：先取消关闭（取消会复原页面、且不会触发 finish/隐藏），
     // 再按普通呼出流程处理，避免“关闭动画没播完就呼出”导致窗口又被隐藏/动画卡住。
@@ -2158,6 +2165,8 @@ export function mountNoteApp(noteId: string, preset = "") {
   let acrylicOffPending = false;
   function requestAnimatedClose() {
     if (closing) return;
+    // 关闭动画期间抑制「保存中/已保存」提示（关闭会触发一次保存，但不应打扰关闭过程）
+    suppressSaveStatus = true;
     // 呼出/成形动画若在播放，先立即收尾复原页面，避免两个动画同时改 clip-path / mask；
     // 同时作废任何“等待 getSettings 的待播放呼出”，确保关闭能干净接管——
     // 与“关闭被呼出打断”完全对称：双向都随时可打断对方。
@@ -2207,9 +2216,9 @@ export function mountNoteApp(noteId: string, preset = "") {
         // 关闭动画：默认粒子光效（鸿蒙通知删除同款·与呼出共用同一套粒子）；火焰模式（设置值 "erode"，历史命名）用火焰消散；inhale=粒子吸入。
         if (s.particle_mode === "erode") requestFlameDissolveClose(finish, intensity, speed);
         else if (s.particle_mode === "inhale") requestInhaleDissolveClose(finish, intensity, speed);
-        else if (s.particle_mode === "cylinder") requestCylinderDissolveClose(finish, intensity, speed);
-        else if (s.particle_mode === "vortex") requestVortexDissolveClose(finish, intensity, speed);
-        // particle（默认粒子消散）：用全屏透明粒子层窗口渲染，粒子可飘出便签边界（remote=true）
+        // cylinder/vortex/particle：用全屏透明粒子层窗口渲染，粒子不被窗口框住（remote=true）
+        else if (s.particle_mode === "cylinder") requestCylinderDissolveClose(finish, intensity, speed, true);
+        else if (s.particle_mode === "vortex") requestVortexDissolveClose(finish, intensity, speed, true);
         else requestGlowDissolveClose(finish, intensity, speed, true);
       })
       .catch(() => {

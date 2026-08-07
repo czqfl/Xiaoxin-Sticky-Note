@@ -17,6 +17,10 @@
 // cancelCylinderParticles() 立即中止（停帧+复原页面、不触发 onDone），供“呼出打断关闭”；
 // 看门狗强制收尾，杜绝动画卡死导致窗口无法关闭。
 
+import { emit } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
 let cylinderActive = false;
 /** 动画代次：每次 runCylinder 启动 +1。上一轮动画遗留的延时清理凭此作废。 */
 let cylinderGen = 0;
@@ -24,8 +28,10 @@ let cylinderGen = 0;
 /** 当前动画的“立即中止”句柄。 */
 let cancelCylinderFn: (() => void) | null = null;
 
-/** 立即中止粒子动画并复原页面（呼出打断关闭时调用——不触发 onDone，窗口保持显示）。 */
+/** 立即中止粒子动画并复原页面（呼出打断关闭时调用——不触发 onDone，窗口保持显示）。
+ *  若粒子层窗口在播放（remote 模式），一并通知其停止隐藏。 */
 export function cancelCylinderParticles(): void {
+  emit("particles-cancel").catch(() => {});
   const c = cancelCylinderFn;
   cancelCylinderFn = null;
   if (c) {
@@ -77,8 +83,14 @@ export function bumpCylinderGen(): void {
 }
 
 /** 请求播放「旋柱消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。
- * speed：动画速度百分比（100=原速），所有时序按 100/speed 缩放。 */
-export function requestCylinderDissolveClose(onDone: () => void, particleDensity = 50, speed = 100): void {
+ * speed：动画速度百分比（100=原速），所有时序按 100/speed 缩放。
+ * remote：粒子交给全屏透明粒子层窗口渲染（屏幕坐标，不被窗口框住）。 */
+export function requestCylinderDissolveClose(
+  onDone: () => void,
+  particleDensity = 50,
+  speed = 100,
+  remote = false,
+): void {
   const root = document.querySelector(".note-window") as HTMLElement | null;
   if (!root || cylinderActive) {
     onDone();
@@ -104,16 +116,63 @@ export function requestCylinderDissolveClose(onDone: () => void, particleDensity
     done = true; // 阻止 onDone：finish() 不会被调用，窗口保持显示
     cylinderActive = false;
   };
-  try {
-    stopRun = runCylinder(root, particleDensity, speed, () => {
+  void (async () => {
+    // remote：先确认全屏粒子层窗口可用；不可用回退 self（粒子画在窗口内）
+    let useRemote = false;
+    if (remote && !aborted) {
+      try {
+        const layer = await WebviewWindow.getByLabel("particles");
+        if (layer) {
+          await layer.show();
+          useRemote = true;
+        }
+      } catch {
+        useRemote = false;
+      }
+    }
+    if (aborted) return;
+    try {
+      stopRun = runCylinder(root, particleDensity, speed, () => {
+        window.clearTimeout(watchdog);
+        safeDone();
+      }, useRemote ? "remote" : "self");
+      if (useRemote && !aborted) {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        try {
+          const field = await buildColorField(root, w, h);
+          let originX = 0;
+          let originY = 0;
+          try {
+            const pos = await getCurrentWindow().outerPosition();
+            originX = pos.x / dpr;
+            originY = pos.y / dpr;
+          } catch {
+            /* 取不到位置则按屏幕原点 */
+          }
+          emit("particles-start", {
+            type: "cylinder",
+            originX,
+            originY,
+            width: w,
+            height: h,
+            fieldW: field?.fw ?? 8,
+            fieldH: field?.fh ?? 8,
+            fieldData: field ? Array.from(field.data) : [],
+            density: particleDensity,
+            speed,
+          }).catch(() => {});
+        } catch {
+          /* 颜色场构建失败：粒子层按兜底亮白渲染 */
+        }
+      }
+    } catch (e) {
+      console.error("旋柱消散动画异常:", e);
       window.clearTimeout(watchdog);
       safeDone();
-    });
-  } catch (e) {
-    console.error("旋柱消散动画异常:", e);
-    window.clearTimeout(watchdog);
-    safeDone();
-  }
+    }
+  })();
 }
 
 // ---- 颜色工具：采样到的主题色提亮到足够发光的明度（保留色相）----
@@ -261,8 +320,10 @@ function runCylinder(
   particleDensity: number,
   speed: number,
   onDone: () => void,
+  mode: "self" | "remote" = "self",
 ): () => void {
   const myGen = ++cylinderGen; // 本动画实例代次：作废上一轮遗留的延时清理
+  const remote = mode === "remote";
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = window.innerWidth;
   const h = window.innerHeight;
@@ -272,105 +333,115 @@ function runCylinder(
   // ---- 时序参数（整体 ~1.0s：旋转 + 粒子填充 + 透明度淡出收尾）----
   const duration = Math.round(1000 * k);
 
-  // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）----
-  const canvas = document.createElement("canvas");
-  canvas.className = "glow-particles-canvas";
-  canvas.width = Math.max(1, Math.round(w * dpr));
-  canvas.height = Math.max(1, Math.round(h * dpr));
-  canvas.style.position = "fixed";
-  canvas.style.left = "0";
-  canvas.style.top = "0";
-  canvas.style.width = "100%";
-  canvas.style.height = "100%";
-  canvas.style.zIndex = "2147483647";
-  canvas.style.pointerEvents = "none";
-  canvas.style.transform = "translateZ(0)";
-  document.body.appendChild(canvas);
-  const glOpts: WebGLContextAttributes = { alpha: true, premultipliedAlpha: false, antialias: false, depth: false };
-  const gl = (canvas.getContext("webgl", glOpts) ||
-    (canvas.getContext("experimental-webgl" as "webgl", glOpts) as unknown as WebGLRenderingContext | null)) as WebGLRenderingContext | null;
-  if (!gl) {
-    canvas.remove();
-    finishEarly();
-    return () => {};
-  }
-  const VS_SRC = `
-    attribute vec2 a_pos;     // 设备像素坐标
-    attribute vec2 a_param;   // x=直径(设备px) y=alpha
-    attribute vec3 a_color;   // rgb 0~1
-    uniform vec2 u_res;       // canvas 设备尺寸
-    varying float v_alpha;
-    varying vec3 v_color;
-    void main() {
-      vec2 clip = (a_pos / u_res) * 2.0 - 1.0;
-      clip.y = -clip.y;       // 设备 y 向下，翻转
-      gl_Position = vec4(clip, 0.0, 1.0);
-      gl_PointSize = a_param.x;
-      v_alpha = a_param.y;
-      v_color = a_color;
-    }`;
-  const FS_SRC = `
-    precision mediump float;
-    varying float v_alpha;
-    varying vec3 v_color;
-    void main() {
-      vec2 d = gl_PointCoord - vec2(0.5);
-      float r2 = dot(d, d);
-      if (r2 > 0.25) discard;
-      float r = sqrt(r2);
-      float a = clamp((0.3 - r) / 0.06, 0.0, 1.0);
-      gl_FragColor = vec4(v_color * 1.5, v_alpha * a);
-    }`;
-  const compileGL = (type: number, src: string): WebGLShader | null => {
-    const sh = gl.createShader(type);
-    if (!sh) return null;
-    gl.shaderSource(sh, src);
-    gl.compileShader(sh);
-    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-      console.warn("[cylinder] shader compile failed:", gl.getShaderInfoLog(sh));
-      return null;
+  // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）。
+  // remote 模式（粒子交给全屏透明粒子层窗口）下本窗口不建 canvas/GL。----
+  let canvas: HTMLCanvasElement | null = null;
+  let gl: WebGLRenderingContext | null = null;
+  let loseGL = () => {};
+  let aPosLoc = 0;
+  let aParamLoc = 0;
+  let aColorLoc = 0;
+  let glBuf: WebGLBuffer | null = null;
+  if (!remote) {
+    canvas = document.createElement("canvas");
+    canvas.className = "glow-particles-canvas";
+    canvas.width = Math.max(1, Math.round(w * dpr));
+    canvas.height = Math.max(1, Math.round(h * dpr));
+    canvas.style.position = "fixed";
+    canvas.style.left = "0";
+    canvas.style.top = "0";
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.zIndex = "2147483647";
+    canvas.style.pointerEvents = "none";
+    canvas.style.transform = "translateZ(0)";
+    document.body.appendChild(canvas);
+    const glOpts: WebGLContextAttributes = { alpha: true, premultipliedAlpha: false, antialias: false, depth: false };
+    gl = (canvas.getContext("webgl", glOpts) ||
+      (canvas.getContext("experimental-webgl" as "webgl", glOpts) as unknown as WebGLRenderingContext | null)) as WebGLRenderingContext | null;
+    if (!gl) {
+      canvas.remove();
+      finishEarly();
+      return () => {};
     }
-    return sh;
-  };
-  const glVS = compileGL(gl.VERTEX_SHADER, VS_SRC);
-  const glFS = compileGL(gl.FRAGMENT_SHADER, FS_SRC);
-  if (!glVS || !glFS) {
-    canvas.remove();
-    finishEarly();
-    return () => {};
+    const VS_SRC = `
+      attribute vec2 a_pos;     // 设备像素坐标
+      attribute vec2 a_param;   // x=直径(设备px) y=alpha
+      attribute vec3 a_color;   // rgb 0~1
+      uniform vec2 u_res;       // canvas 设备尺寸
+      varying float v_alpha;
+      varying vec3 v_color;
+      void main() {
+        vec2 clip = (a_pos / u_res) * 2.0 - 1.0;
+        clip.y = -clip.y;       // 设备 y 向下，翻转
+        gl_Position = vec4(clip, 0.0, 1.0);
+        gl_PointSize = a_param.x;
+        v_alpha = a_param.y;
+        v_color = a_color;
+      }`;
+    const FS_SRC = `
+      precision mediump float;
+      varying float v_alpha;
+      varying vec3 v_color;
+      void main() {
+        vec2 d = gl_PointCoord - vec2(0.5);
+        float r2 = dot(d, d);
+        if (r2 > 0.25) discard;
+        float r = sqrt(r2);
+        float a = clamp((0.3 - r) / 0.06, 0.0, 1.0);
+        gl_FragColor = vec4(v_color * 1.5, v_alpha * a);
+      }`;
+    const compileGL = (type: number, src: string): WebGLShader | null => {
+      const sh = gl!.createShader(type);
+      if (!sh) return null;
+      gl!.shaderSource(sh, src);
+      gl!.compileShader(sh);
+      if (!gl!.getShaderParameter(sh, gl!.COMPILE_STATUS)) {
+        console.warn("[cylinder] shader compile failed:", gl!.getShaderInfoLog(sh));
+        return null;
+      }
+      return sh;
+    };
+    const glVS = compileGL(gl.VERTEX_SHADER, VS_SRC);
+    const glFS = compileGL(gl.FRAGMENT_SHADER, FS_SRC);
+    if (!glVS || !glFS) {
+      canvas.remove();
+      finishEarly();
+      return () => {};
+    }
+    const glProg = gl.createProgram();
+    if (!glProg) {
+      canvas.remove();
+      finishEarly();
+      return () => {};
+    }
+    gl.attachShader(glProg, glVS);
+    gl.attachShader(glProg, glFS);
+    gl.linkProgram(glProg);
+    if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) {
+      console.warn("[cylinder] program link failed:", gl.getProgramInfoLog(glProg));
+      canvas.remove();
+      finishEarly();
+      return () => {};
+    }
+    gl.useProgram(glProg);
+    aPosLoc = gl.getAttribLocation(glProg, "a_pos");
+    aParamLoc = gl.getAttribLocation(glProg, "a_param");
+    aColorLoc = gl.getAttribLocation(glProg, "a_color");
+    gl.uniform2f(gl.getUniformLocation(glProg, "u_res"), canvas.width, canvas.height);
+    glBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, glBuf);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // additive 辉光（非预乘）
+    let glLost = false;
+    loseGL = () => {
+      if (glLost) return;
+      glLost = true;
+      const ext = gl!.getExtension("WEBGL_lose_context");
+      if (ext) ext.loseContext();
+    };
   }
-  const glProg = gl.createProgram();
-  if (!glProg) {
-    canvas.remove();
-    finishEarly();
-    return () => {};
-  }
-  gl.attachShader(glProg, glVS);
-  gl.attachShader(glProg, glFS);
-  gl.linkProgram(glProg);
-  if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) {
-    console.warn("[cylinder] program link failed:", gl.getProgramInfoLog(glProg));
-    canvas.remove();
-    finishEarly();
-    return () => {};
-  }
-  gl.useProgram(glProg);
-  const aPosLoc = gl.getAttribLocation(glProg, "a_pos");
-  const aParamLoc = gl.getAttribLocation(glProg, "a_param");
-  const aColorLoc = gl.getAttribLocation(glProg, "a_color");
-  gl.uniform2f(gl.getUniformLocation(glProg, "u_res"), canvas.width, canvas.height);
-  const glBuf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, glBuf);
-  gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // additive 辉光（非预乘）
-  let glLost = false;
-  const loseGL = () => {
-    if (glLost) return;
-    glLost = true;
-    const ext = gl.getExtension("WEBGL_lose_context");
-    if (ext) ext.loseContext();
-  };
 
   // ---- 颜色场（异步构建；之后按生成区域采样）----
   let field: ColorField | null = null;
@@ -400,34 +471,50 @@ function runCylinder(
   // 每颗粒子锁定自己的固定半径绕轴旋转、消散后在他处重生——圆柱半径固定不变，不存在“扩张”，
   // 整柱均匀填充，不会只有一层外圈壳，也没有突兀的中心小圆柱。----
   // 旋柱相对其他模式略弱：density 系数 43000→32000（仅本模式，其他模式不动）
-  const N = Math.round(6400 + density * 32000);
-  const maxP = Math.max(N + 64, 256);
-  const pth = new Float32Array(maxP);    // 圆周角 θ（绕轴旋转）
-  const pyAx = new Float32Array(maxP);   // 轴向位置（屏幕 y，0~h）
-  const pbirth = new Float32Array(maxP); // 出生时刻（相对动画起点的 age，ms）
-  const plife = new Float32Array(maxP);  // 寿命 ms
-  const psize = new Float32Array(maxP);  // 基础像素尺寸
-  const pseed = new Float32Array(maxP);  // 随机相位（微抖动）
-  const prad = new Float32Array(maxP);   // 出生截面半径：固定 0~R（圆盘均匀填充，实心）
-  const pr = new Float32Array(maxP);
-  const pg = new Float32Array(maxP);
-  const pb = new Float32Array(maxP);
-  const glData = new Float32Array(maxP * 7);
+  // remote 模式：粒子交给全屏粒子层窗口渲染（屏幕坐标，不被窗口框住），本窗口不初始化粒子池。
+  let N = 0;
+  let pth = new Float32Array(0);    // 圆周角 θ（绕轴旋转）
+  let pyAx = new Float32Array(0);   // 轴向位置（屏幕 y，0~h）
+  let pbirth = new Float32Array(0); // 出生时刻（相对动画起点的 age，ms）
+  let plife = new Float32Array(0);  // 寿命 ms
+  let psize = new Float32Array(0);  // 基础像素尺寸
+  let pseed = new Float32Array(0);  // 随机相位（微抖动）
+  let prad = new Float32Array(0);   // 出生截面半径：固定 0~R（圆盘均匀填充，实心）
+  let pr = new Float32Array(0);
+  let pg = new Float32Array(0);
+  let pb = new Float32Array(0);
+  let glData = new Float32Array(0);
+  let respawn: (i: number, atAge: number) => void = () => {};
+  if (!remote) {
+    N = Math.round(6400 + density * 32000);
+    const maxP = Math.max(N + 64, 256);
+    pth = new Float32Array(maxP);
+    pyAx = new Float32Array(maxP);
+    pbirth = new Float32Array(maxP);
+    plife = new Float32Array(maxP);
+    psize = new Float32Array(maxP);
+    pseed = new Float32Array(maxP);
+    prad = new Float32Array(maxP);
+    pr = new Float32Array(maxP);
+    pg = new Float32Array(maxP);
+    pb = new Float32Array(maxP);
+    glData = new Float32Array(maxP * 7);
 
-  // 在圆柱截面内重生一粒：随机截面半径/轴向位置/角度/主题色，赋予随机寿命（半径固定不扩张）
-  const respawn = (i: number, atAge: number): void => {
-    pbirth[i] = atAge;
-    pyAx[i] = Math.random() * h;
-    pth[i] = Math.random() * Math.PI * 2;
-    plife[i] = 1200 + Math.random() * 900;
-    psize[i] = 1.8;
-    pseed[i] = Math.random() * Math.PI * 2;
-    prad[i] = R * Math.sqrt(Math.random()); // 圆盘面积均匀 → 实心圆柱截面填充
-    const [r, g, b] = sampleThemeColor(cx + (Math.random() - 0.5) * w * 0.4, pyAx[i]);
-    pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
-  };
-  for (let i = 0; i < N; i++) {
-    respawn(i, Math.random() * 260); // 开头 0~260ms 内陆续出生，圆柱即刻成型（不是慢慢长大）
+    // 在圆柱截面内重生一粒：随机截面半径/轴向位置/角度/主题色，赋予随机寿命（半径固定不扩张）
+    respawn = (i: number, atAge: number): void => {
+      pbirth[i] = atAge;
+      pyAx[i] = Math.random() * h;
+      pth[i] = Math.random() * Math.PI * 2;
+      plife[i] = 1200 + Math.random() * 900;
+      psize[i] = 1.8;
+      pseed[i] = Math.random() * Math.PI * 2;
+      prad[i] = R * Math.sqrt(Math.random()); // 圆盘面积均匀 → 实心圆柱截面填充
+      const [r, g, b] = sampleThemeColor(cx + (Math.random() - 0.5) * w * 0.4, pyAx[i]);
+      pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
+    };
+    for (let i = 0; i < N; i++) {
+      respawn(i, Math.random() * 260); // 开头 0~260ms 内陆续出生，圆柱即刻成型（不是慢慢长大）
+    }
   }
 
   // ---- 帧循环控制 ----
@@ -461,7 +548,7 @@ function runCylinder(
   const cleanupAfterHide = () => {
     stopLoop();
     try {
-      canvas.remove();
+      canvas?.remove();
     } catch {
       /* ignore */
     }
@@ -506,60 +593,62 @@ function runCylinder(
       root.style.maskImage = maskCss;
     }
 
-    // ---- 粒子：固定半径 R 的圆柱截面内旋转、消散、重生；亮度与该处“已被粒子化”的程度同步
-    // （中心亮、向外渐暗）→ 圆柱由中心向两侧逐渐完整，半径全程不变 ----
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    const globalFade = age > duration - Math.round(260 * k) ? Math.max(0, (duration - age) / Math.round(260 * k)) : 1; // 末段整体淡出
-    let drawCount = 0;
-    for (let i = 0; i < N; i++) {
-      let a = age - pbirth[i];
-      if (a < 0) continue;            // 尚未出生
-      if (a >= plife[i]) {            // 寿命到 → 在外壳另一位置重生（不息）
-        respawn(i, age);
-        a = 0;
+    // ---- 粒子：固定半径 R 的圆柱截面内旋转、消散、重生（仅 self 模式在本窗口渲染；
+    // remote 模式粒子由全屏粒子层窗口渲染，不被窗口框住）----
+    if (!remote) {
+      gl!.clearColor(0, 0, 0, 0);
+      gl!.clear(gl!.COLOR_BUFFER_BIT);
+      const globalFade = age > duration - Math.round(260 * k) ? Math.max(0, (duration - age) / Math.round(260 * k)) : 1; // 末段整体淡出
+      let drawCount = 0;
+      for (let i = 0; i < N; i++) {
+        let a = age - pbirth[i];
+        if (a < 0) continue;            // 尚未出生
+        if (a >= plife[i]) {            // 寿命到 → 在外壳另一位置重生（不息）
+          respawn(i, age);
+          a = 0;
+        }
+        const theta = pth[i] + omega * (age / 1000); // 绕轴旋转（全部粒子同步 → 整体圆柱在转）
+        const r = prad[i];                           // 固定截面半径（0~R 均匀，全程不扩张）
+        const z = r * Math.cos(theta);               // 透视深度（朝观众为正）
+        const s = focal / (focal - z);               // 近大远小
+        const sx = cx + r * Math.sin(theta) * s;     // 屏幕 x（圆周投影）
+        const sy = pyAx[i];                          // 轴向位置（沿竖轴，锁定便签顶/底边）
+        const fadeIn = Math.min(1, a / 150);         // 出生淡入
+        const u = a / plife[i];
+        const lifeFade = u > 0.7 ? Math.max(0, (1 - u) / 0.3) : 1; // 末段消散
+        // 圆柱立体感：正面（z>0）亮、背面（z<0）略暗
+        const depthShade = 0.62 + 0.38 * Math.max(0, Math.min(1, (z + r) / (2 * r)));
+        // 与“已被粒子化区域”同步：离中心越远越暗；随侵蚀带扩展整个圆柱逐渐完整
+        const edge = Math.min(1, Math.max(0.42, erosionHalf / Math.max(1, Math.abs(sx - cx))));
+        const alpha = fadeIn * lifeFade * globalFade * depthShade * edge;
+        if (alpha < 0.02) continue;
+        const haloR = psize[i] * s * (0.6 + 0.4 * fadeIn);
+        const o = drawCount * 7;
+        glData[o] = sx * dpr;
+        glData[o + 1] = sy * dpr;
+        glData[o + 2] = haloR * 2 * dpr;
+        glData[o + 3] = alpha;
+        glData[o + 4] = pr[i];
+        glData[o + 5] = pg[i];
+        glData[o + 6] = pb[i];
+        drawCount++;
       }
-      const theta = pth[i] + omega * (age / 1000); // 绕轴旋转（全部粒子同步 → 整体圆柱在转）
-      const r = prad[i];                           // 固定截面半径（0~R 均匀，全程不扩张）
-      const z = r * Math.cos(theta);               // 透视深度（朝观众为正）
-      const s = focal / (focal - z);               // 近大远小
-      const sx = cx + r * Math.sin(theta) * s;     // 屏幕 x（圆周投影）
-      const sy = pyAx[i];                          // 轴向位置（沿竖轴，锁定便签顶/底边）
-      const fadeIn = Math.min(1, a / 150);         // 出生淡入
-      const u = a / plife[i];
-      const lifeFade = u > 0.7 ? Math.max(0, (1 - u) / 0.3) : 1; // 末段消散
-      // 圆柱立体感：正面（z>0）亮、背面（z<0）略暗
-      const depthShade = 0.62 + 0.38 * Math.max(0, Math.min(1, (z + r) / (2 * r)));
-      // 与“已被粒子化区域”同步：离中心越远越暗；随侵蚀带扩展整个圆柱逐渐完整
-      const edge = Math.min(1, Math.max(0.42, erosionHalf / Math.max(1, Math.abs(sx - cx))));
-      const alpha = fadeIn * lifeFade * globalFade * depthShade * edge;
-      if (alpha < 0.02) continue;
-      const haloR = psize[i] * s * (0.6 + 0.4 * fadeIn);
-      const o = drawCount * 7;
-      glData[o] = sx * dpr;
-      glData[o + 1] = sy * dpr;
-      glData[o + 2] = haloR * 2 * dpr;
-      glData[o + 3] = alpha;
-      glData[o + 4] = pr[i];
-      glData[o + 5] = pg[i];
-      glData[o + 6] = pb[i];
-      drawCount++;
-    }
-    if (drawCount > 0) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, glBuf);
-      gl.bufferData(gl.ARRAY_BUFFER, glData.subarray(0, drawCount * 7), gl.DYNAMIC_DRAW);
-      gl.enableVertexAttribArray(aPosLoc);
-      gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 28, 0);
-      gl.enableVertexAttribArray(aParamLoc);
-      gl.vertexAttribPointer(aParamLoc, 2, gl.FLOAT, false, 28, 8);
-      gl.enableVertexAttribArray(aColorLoc);
-      gl.vertexAttribPointer(aColorLoc, 3, gl.FLOAT, false, 28, 16);
-      gl.drawArrays(gl.POINTS, 0, drawCount);
+      if (drawCount > 0) {
+        gl!.bindBuffer(gl!.ARRAY_BUFFER, glBuf);
+        gl!.bufferData(gl!.ARRAY_BUFFER, glData.subarray(0, drawCount * 7), gl!.DYNAMIC_DRAW);
+        gl!.enableVertexAttribArray(aPosLoc);
+        gl!.vertexAttribPointer(aPosLoc, 2, gl!.FLOAT, false, 28, 0);
+        gl!.enableVertexAttribArray(aParamLoc);
+        gl!.vertexAttribPointer(aParamLoc, 2, gl!.FLOAT, false, 28, 8);
+        gl!.enableVertexAttribArray(aColorLoc);
+        gl!.vertexAttribPointer(aColorLoc, 3, gl!.FLOAT, false, 28, 16);
+        gl!.drawArrays(gl!.POINTS, 0, drawCount);
+      }
     }
 
     if (age >= duration) {
-      gl.clearColor(0, 0, 0, 0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl?.clearColor(0, 0, 0, 0);
+      gl?.clear(gl!.COLOR_BUFFER_BIT);
       stopLoop();
       try {
         onDone(); // 触发真正隐藏窗口
