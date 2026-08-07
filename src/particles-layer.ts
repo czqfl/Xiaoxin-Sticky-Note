@@ -182,6 +182,7 @@ const respawnVortex = (i: number, atAge: number, curR: number): void => {
   pth[i] = Math.random() * Math.PI * 2;
   plife[i] = Math.round((900 + Math.random() * 600) * k);
   psize[i] = 2.0;
+  pseed[i] = Math.random() * Math.PI * 2; // 扰动相位（轨迹扭曲/抖动用）
   prad[i] = Math.sqrt(Math.random()); // 圆盘面积均匀的比例（0~1，跟随 curR 扩张）
   // 生成处取色：出生位置（当前圆盘该半径处）对应的便签背景色
   const r0 = curR * prad[i];
@@ -425,12 +426,20 @@ const frame = (now: number): void => {
         respawnVortex(i, age, curR);
         a = 0;
       }
-      const theta = pth[i] + omega * (age / 1000);
+      // 轨迹扭曲：旋转角度叠加随时间变化的扰动（避免规整圆周运动，产生有机流动感）
+      const theta = pth[i] + omega * (age / 1000)
+        + Math.sin(a * 0.005 + pseed[i] * 2) * 0.05
+        + Math.sin(a * 0.012 + pseed[i]) * 0.03;
       const t = a / plife[i];
       const shrink = t * t;
-      const r = curR * prad[i] * (1 - 0.92 * shrink); // 跟随当前圆盘扩张/收拢 + 向中心吸入收缩
-      const sx = cx + r * Math.cos(theta);
-      const sy = cy + r * Math.sin(theta);
+      // 外缘不规则：按粒子角度叠加低频多频扰动，打破完美圆形（边缘有机扰动）
+      const ripplePhase = age * 0.0008; // 随时间缓慢流动，边缘变化自然
+      const ripple = 1 + 0.12 * Math.sin(theta * 3 + ripplePhase)
+        + 0.07 * Math.sin(theta * 5 - ripplePhase * 0.7 + 1.9)
+        + 0.05 * Math.sin(theta * 7 + ripplePhase * 1.3 + 4.1);
+      const r = curR * ripple * prad[i] * (1 - 0.92 * shrink); // 跟随扩张/收拢 + 边缘扰动 + 吸入
+      const sx = cx + r * Math.cos(theta) + Math.sin(a * 0.004 + pseed[i]) * 7; // 位置微抖动（扭曲感）
+      const sy = cy + r * Math.sin(theta) + Math.cos(a * 0.005 + pseed[i] * 1.7) * 7;
       const fadeIn = Math.min(1, a / 150);
       const lifeFade = t > 0.7 ? Math.max(0, (1 - t) / 0.3) : 1;
       const alpha = fadeIn * lifeFade * globalFade;
