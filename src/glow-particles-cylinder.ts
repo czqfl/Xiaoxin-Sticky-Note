@@ -6,8 +6,9 @@
 // 视觉要点（对齐需求）：
 // - **便签本体绕竖轴旋转**：CSS perspective + rotateY，约 2 圈，呈现圆柱体侧面旋转；
 //   backface-visibility:hidden 让转到背面的部分隐没（圆柱实体感）；后段透明度淡出 → 消失。
-// - **粒子从竖轴发散成圆柱**：粒子初始聚集在居中竖线（轴，半径 0），向径向（左右）发散到
-//   圆柱表面半径 R，沿圆周分布并随轴旋转；透视投影（近大近亮 / 远小远暗）→ 粒子化的旋转圆柱。
+// - **粒子在固定的圆柱截面半径上旋转**：粒子出生即落在当前圆柱外壳半径（不再从轴心持续往外冒、
+//   不再随时间持续扩张），绕该固定半径绕轴旋转；随动画推进，新粒子在更大半径重生 → 圆柱由中心
+//   向外“长大”直至固定外径 R（原著），全程不出现中心小圆柱（无粒子生于半径≈0）。
 // - **圆柱上下端对应便签顶 / 底边**：粒子轴向位置 y 均匀铺满 [0, h]，沿竖轴贯穿全高。
 // - 颜色采样自主题色（粒子颜色 = 背景颜色），additive 叠加出辉光。
 //
@@ -386,13 +387,13 @@ function runCylinder(
 
   // ---- 圆柱几何参数 ----
   const cx = w / 2;                 // 竖直中轴（屏幕水平中心）
-  const R = w * 0.46;               // 名义半径：仅用于推导透视焦距
+  const R = w * 0.46;               // 圆柱固定外径（原著半径）：透视焦距推导 + 最终壳半径
   const focal = R * 2.6;            // 透视焦距：近大远小（前大后小）
-  const maxR = w * 0.5;             // 粒子寿命内最大径向位移（≈半宽，超出屏幕即被裁）
-  const vR = maxR / 1700;           // 径向扩张速度（px/ms）：粒子持续向外→圆柱不断扩张
+  const consumeDur = duration * 0.85; // 便签被卷入圆柱的进度时长：圆柱半径由 0 增长至 R 与之同步
   const omega = (Math.PI * 2 * 2) / (duration / 1000); // 绕轴角速度：全程约 2 圈（rad/s）
 
-  // ---- 粒子池（SoA）：粒子从中心轴持续往外冒、持续消散（死亡即原地重生，形成不息的喷泉）----
+  // ---- 粒子池（SoA）：粒子出生即落在当前圆柱外壳半径、绕轴旋转、消散后在更大半径重生，
+  // 不息维持旋转圆柱（不再从轴心往外冒，不再随时间持续扩张）。----
   // 旋柱相对其他模式略弱：density 系数 43000→32000（仅本模式，其他模式不动）
   const N = Math.round(6400 + density * 32000);
   const maxP = Math.max(N + 64, 256);
@@ -402,24 +403,28 @@ function runCylinder(
   const plife = new Float32Array(maxP);  // 寿命 ms
   const psize = new Float32Array(maxP);  // 基础像素尺寸
   const pseed = new Float32Array(maxP);  // 随机相位（微抖动）
+  const prad = new Float32Array(maxP);   // 出生半径：锁定在“出生时圆柱外壳半径”，固定不再扩张
   const pr = new Float32Array(maxP);
   const pg = new Float32Array(maxP);
   const pb = new Float32Array(maxP);
   const glData = new Float32Array(maxP * 7);
 
-  // 在轴上重生一粒：从中心竖线冒出，随机轴向位置/角度/主题色，赋予随机寿命
-  const respawn = (i: number, atAge: number): void => {
+  // 在当前圆柱外壳半径 curR 上重生一粒：随机轴向位置/角度/主题色，赋予随机寿命
+  const respawn = (i: number, atAge: number, curR: number): void => {
     pbirth[i] = atAge;
     pyAx[i] = Math.random() * h;
     pth[i] = Math.random() * Math.PI * 2;
     plife[i] = 1100 + Math.random() * 900;
     psize[i] = 1.8;
     pseed[i] = Math.random() * Math.PI * 2;
+    const jit = Math.min(8, Math.max(2, curR * 0.08));
+    prad[i] = Math.max(2, curR + (Math.random() - 0.5) * jit); // 出生即在外壳上（含微抖动）
     const [r, g, b] = sampleThemeColor(cx + (Math.random() - 0.5) * w * 0.4, pyAx[i]);
     pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
   };
+  const initCurR = R * 0.12; // 起始即有一个微小圆柱雏形（避免开头完全无粒子）
   for (let i = 0; i < N; i++) {
-    respawn(i, Math.random() * 260); // 起始即铺满喷泉（随后靠死亡重生维持不息）
+    respawn(i, Math.random() * 260, initCurR);
   }
 
   // ---- 帧循环控制 ----
@@ -469,6 +474,8 @@ function runCylinder(
       start = now;
     }
     const age = now - start;
+    // 当前圆柱外径：随动画推进由 0 增长至固定 R（便签被卷入的进度），达到后保持固定半径旋转
+    const curR = R * Math.min(1, age / consumeDur);
 
     // ---- 便签本体：保持静止、不旋转。靠遮罩把“被圆柱覆盖的区域”真正擦成透明（粒子化、消失），
     // 而非整体变透明；仅后半段（后 50% 动画时间）再让剩余便签轻微透明（100% → 65%）。----
@@ -479,7 +486,7 @@ function runCylinder(
       const p = Math.min(1, (age - fadeStart) / (duration - fadeStart));
       root.style.opacity = (1 - 0.35 * p).toFixed(3); // 1.0 → 0.65
     }
-    const Rf = Math.min(maxR, vR * age);             // 当前圆柱扩张半径（与粒子外层同步）
+    const Rf = curR;                                  // 当前圆柱外径（与粒子外层壳同步）
     const rw = root.clientWidth || w;
     const halfPct = (Rf / rw) * 100;
     if (halfPct >= 50) {
@@ -498,31 +505,31 @@ function runCylinder(
       root.style.maskImage = maskCss;
     }
 
-    // ---- 粒子：从中心竖线持续往外冒 → 加入不断扩张的圆柱壳 → 绕轴旋转 → 持续消散 ----
+    // ---- 粒子：出生即落在当前圆柱外壳半径、绕固定半径旋转、消散后在更大半径重生 → 旋转圆柱 ----
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
-    const globalFade = age > duration - 600 ? Math.max(0, (duration - age) / 600) : 1; // 末段整体淡出，避免结尾残留中心亮柱
+    const globalFade = age > duration - 600 ? Math.max(0, (duration - age) / 600) : 1; // 末段整体淡出
     let drawCount = 0;
     for (let i = 0; i < N; i++) {
       let a = age - pbirth[i];
-      if (a < 0) continue;            // 尚未冒出
-      if (a >= plife[i]) {            // 寿命到 → 原地重生（不息喷泉）
-        respawn(i, age);
+      if (a < 0) continue;            // 尚未出生
+      if (a >= plife[i]) {            // 寿命到 → 在当前圆柱外壳半径上重生（不息）
+        respawn(i, age, curR);
         a = 0;
       }
       const theta = pth[i] + omega * (age / 1000); // 绕轴旋转（全部粒子同步 → 整体圆柱在转）
-      const r = vR * a;                            // 半径随时间持续向外扩张（圆柱不断变大）
+      const r = prad[i];                           // 固定出生半径（不再随时间扩张；圆柱靠新粒子在更大半径重生而“长大”）
       const z = r * Math.cos(theta);               // 透视深度（朝观众为正）
       const s = focal / (focal - z);               // 近大远小
       const sx = cx + r * Math.sin(theta) * s;     // 屏幕 x（圆周投影）
       const sy = pyAx[i];                          // 轴向位置（沿竖轴，锁定便签顶/底边）
-      const fadeIn = Math.min(1, a / 160);         // 从轴冒出时淡入
+      const fadeIn = Math.min(1, a / 160);         // 出生淡入
       const u = a / plife[i];
       const lifeFade = u > 0.7 ? Math.max(0, (1 - u) / 0.3) : 1; // 末段消散
-      // 圆柱本就是中空回转体：轴心附近一段半径内完全不可见、向外渐亮。这才能根除
-      // “结尾中心冒出小圆柱”——末尾残存的都是刚出生的小半径粒子，正好落在不可见区内。
-      const coreDim = Math.min(1, Math.max(0, (r - w * 0.07) / (w * 0.06)));
-      const alpha = fadeIn * lifeFade * globalFade * coreDim;
+      // 当前圆柱外径为 curR：远小于外径的旧粒子（已被后续更大半径的圆柱“包裹”）渐暗，
+      // 既保留外层明亮壳、又避免早期残留的中心小簇被误读成“中心小圆柱”。
+      const shellFade = curR > 2 ? Math.min(1, r / (curR * 0.55)) : 1;
+      const alpha = fadeIn * lifeFade * globalFade * shellFade;
       if (alpha < 0.02) continue;
       const haloR = psize[i] * s * (0.6 + 0.4 * fadeIn);
       const o = drawCount * 7;
