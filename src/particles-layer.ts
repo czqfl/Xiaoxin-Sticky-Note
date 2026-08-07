@@ -408,10 +408,16 @@ const frame = (now: number): void => {
       drawCount++;
     }
   } else {
-    // vortex
+    // vortex：两段式——前 40% 快速扩张到 maxR（点扩散成圆盘），后 60% 迅速收拢回中心点
     const p = Math.min(1, age / duration);
-    // 起始即有一个小圆盘（5% maxR），避免粒子全挤在圆心一个点 additive 叠加成刺眼白斑
-    const curR = maxR * (0.05 + 0.95 * p * (2 - p));
+    let curR: number;
+    if (p < 0.4) {
+      const q = p / 0.4;
+      curR = maxR * (0.05 + 0.95 * q * (2 - q)); // ease-out 快速扩张
+    } else {
+      const q = (p - 0.4) / 0.6;
+      curR = maxR * (1 - 0.95 * q * q); // ease-in 迅速收拢回点
+    }
     for (let i = 0; i < pcount; i++) {
       let a = age - pbirth[i];
       if (a < 0) continue;
@@ -422,7 +428,7 @@ const frame = (now: number): void => {
       const theta = pth[i] + omega * (age / 1000);
       const t = a / plife[i];
       const shrink = t * t;
-      const r = curR * prad[i] * (1 - 0.92 * shrink); // 跟随当前圆盘扩张 + 向中心吸入收缩
+      const r = curR * prad[i] * (1 - 0.92 * shrink); // 跟随当前圆盘扩张/收拢 + 向中心吸入收缩
       const sx = cx + r * Math.cos(theta);
       const sy = cy + r * Math.sin(theta);
       const fadeIn = Math.min(1, a / 150);

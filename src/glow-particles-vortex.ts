@@ -563,11 +563,19 @@ function runVortex(
       start = now;
     }
     const age = now - start;
-    // 粒子化前缘：圆心半径由 5% 平滑扩张至 maxR（ease-out 二次曲线：先快后慢）。
-    // 公式必须与全屏粒子层窗口的 vortex 完全一致（0.05 + 0.95*p*(2-p)），
-    // 保证便签被粒子化的圆与粒子分布圆半径位置对应、速度同步。
+    // 便签 mask：只扩张不回收（前 40% 扩张到 maxR，之后保持全擦，便签擦除后不恢复显示）
+    const erodeP = Math.min(1, age / (duration * 0.4));
+    const erodeR = maxR * (0.05 + 0.95 * erodeP * (2 - erodeP));
+    // 粒子圆盘：两段式——前 40% 快速扩张（点扩散成圆盘），后 60% 迅速收拢回中心点
     const p = Math.min(1, age / duration);
-    const curR = maxR * (0.05 + 0.95 * p * (2 - p));
+    let curR: number;
+    if (p < 0.4) {
+      const q = p / 0.4;
+      curR = maxR * (0.05 + 0.95 * q * (2 - q));
+    } else {
+      const q = (p - 0.4) / 0.6;
+      curR = maxR * (1 - 0.95 * q * q);
+    }
 
     // ---- 便签本体：保持静止。靠 mask 把“已被粒子化的圆形区域”真正擦成透明（消失），
     // 而非整体变透明；仅后半段（后 50% 动画时间）再让剩余便签轻微透明（100% → 65%）。----
@@ -576,14 +584,14 @@ function runVortex(
       const p2 = Math.min(1, (age - fadeStart) / (duration - fadeStart));
       root.style.opacity = (1 - 0.35 * p2).toFixed(3); // 1.0 → 0.65
     }
-    if (curR >= maxR) {
-      // 粒子化已覆盖整幅 → 便签整体消失
+    if (erodeR >= maxR) {
+      // 粒子化已覆盖整幅 → 便签整体消失（保持，不恢复）
       root.style.webkitMaskImage = "linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,0))";
       root.style.maskImage = "linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,0))";
     } else {
       // mask：圆内透明（隐藏=已粒子化擦除）、圆外 #000（显示），前缘宽羽化（边缘柔和不呈圆线）
       const feather = 28;
-      const inner = Math.max(0, curR - feather);
+      const inner = Math.max(0, erodeR - feather);
       const maskCss =
         `radial-gradient(circle at ${cx}px ${cy}px, rgba(0,0,0,0) 0%, rgba(0,0,0,0) ${inner}px,` +
         ` #000 ${curR}px, #000 100%)`;
