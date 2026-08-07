@@ -469,12 +469,32 @@ function runCylinder(
     }
     const age = now - start;
 
-    // ---- 便签本体：保持静止、不旋转。前半段完全不透明——靠粒子圆柱“粒子化”周边，而非整体变透明；
-    // 仅后半段（后 50% 动画时间）让便签轻微透明（100% → 65%），到结尾窗口即关闭，不归零。----
+    // ---- 便签本体：保持静止、不旋转。靠遮罩把“被圆柱覆盖的区域”真正擦成透明（粒子化、消失），
+    // 而非整体变透明；仅后半段（后 50% 动画时间）再让剩余便签轻微透明（100% → 65%）。----
+    // 圆柱是绕竖轴的回转体，正面投影即一条贯穿全高、宽度 ±Rf 的竖直条带；Rf 随扩张半径增长
+    // → 便签从中心向外被“吃”掉，被覆盖的原始区域真正消失。
     const fadeStart = duration * 0.5;
     if (age > fadeStart) {
       const p = Math.min(1, (age - fadeStart) / (duration - fadeStart));
       root.style.opacity = (1 - 0.35 * p).toFixed(3); // 1.0 → 0.65
+    }
+    const Rf = Math.min(maxR, vR * age);             // 当前圆柱扩张半径（与粒子外层同步）
+    const rw = root.clientWidth || w;
+    const halfPct = (Rf / rw) * 100;
+    if (halfPct >= 50) {
+      // 圆柱已扩张到覆盖整幅 → 便签整体被“粒子化”消失
+      root.style.webkitMaskImage = "linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,0))";
+      root.style.maskImage = "linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,0))";
+    } else {
+      const cPct = (cx / rw) * 100;
+      const lPct = cPct - halfPct;
+      const rPct = cPct + halfPct;
+      const ft = 4; // 边缘羽化（%）
+      const maskCss =
+        `linear-gradient(to right, #000 0%, #000 ${lPct}%, rgba(0,0,0,0) ${lPct + ft}%,` +
+        ` rgba(0,0,0,0) ${rPct - ft}%, #000 ${rPct}%, #000 100%)`;
+      root.style.webkitMaskImage = maskCss;
+      root.style.maskImage = maskCss;
     }
 
     // ---- 粒子：从中心竖线持续往外冒 → 加入不断扩张的圆柱壳 → 绕轴旋转 → 持续消散 ----
@@ -498,8 +518,8 @@ function runCylinder(
       const fadeIn = Math.min(1, a / 160);         // 从轴冒出时淡入
       const u = a / plife[i];
       const lifeFade = u > 0.7 ? Math.max(0, (1 - u) / 0.3) : 1; // 末段消散
-      const radial = r / (w * 0.07);               // 距轴比例（轴→7% 半宽）
-      const coreDim = 0.12 + 0.88 * Math.min(1, radial); // 压暗轴心：避免中心始终一根亮实心柱
+      const radial = r / (w * 0.04);               // 距轴比例（轴→4% 半宽）
+      const coreDim = Math.min(1, radial);         // 轴心完全不可见、离轴渐亮：根除中心亮实心柱
       const alpha = fadeIn * lifeFade * globalFade * coreDim;
       if (alpha < 0.02) continue;
       const haloR = psize[i] * s * (0.6 + 0.4 * fadeIn);
