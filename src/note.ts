@@ -2209,7 +2209,8 @@ export function mountNoteApp(noteId: string, preset = "") {
         else if (s.particle_mode === "inhale") requestInhaleDissolveClose(finish, intensity, speed);
         else if (s.particle_mode === "cylinder") requestCylinderDissolveClose(finish, intensity, speed);
         else if (s.particle_mode === "vortex") requestVortexDissolveClose(finish, intensity, speed);
-        else requestGlowDissolveClose(finish, intensity, speed);
+        // particle（默认粒子消散）：用全屏透明粒子层窗口渲染，粒子可飘出便签边界（remote=true）
+        else requestGlowDissolveClose(finish, intensity, speed, true);
       })
       .catch(() => {
         if (!closing) return;

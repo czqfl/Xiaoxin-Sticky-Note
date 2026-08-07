@@ -3,6 +3,7 @@ import { mountNoteApp } from "./note";
 import { mountHistoryApp } from "./history";
 import { openSettingsModal } from "./settings";
 import { mountImageViewer } from "./image-viewer";
+import { mountParticlesLayer } from "./particles-layer";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 // 全局错误兜底：任何未捕获异常都显示出来，避免静默空白/卡死难以排查。
@@ -40,6 +41,9 @@ if (label === "history") {
 } else if (label === "imageviewer") {
   // 独立图片预览窗口：双击便签图片时由后端 open_image_viewer 命令创建
   mountImageViewer().catch((e) => console.error("图片预览加载失败:", e));
+} else if (label === "particles") {
+  // 全屏透明粒子层窗口：负责“粒子消散”动画的粒子渲染（粒子可飘出便签窗口）
+  mountParticlesLayer().catch((e) => console.error("粒子层初始化失败:", e));
 } else {
   mountNoteApp(noteId, preset);
 }

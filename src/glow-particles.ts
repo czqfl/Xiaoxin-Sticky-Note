@@ -24,16 +24,25 @@
 // 点精灵）；cancelGlowParticles() 立即中止（停帧+复原页面、不触发 onDone），供"呼出打断关闭"；
 // 看门狗强制收尾，杜绝动画卡死导致窗口无法关闭。
 
+import { emit } from "@tauri-apps/api/event";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+
 let glowActive = false;
 /** 动画代次：每次 runGlow 启动 +1。上一轮动画遗留的延时清理（cleanupAfterHide）凭此作废，
  *  避免快速呼出时把正在播放的新动画便签裁掉/隐藏（见 cleanupAfterHide 守卫）。 */
 let glowGen = 0;
 
+/** remote 模式（粒子交给全屏透明粒子层窗口）时，最近一次构建的消散时间场（供转发给粒子层）。 */
+let lastTField: { tW: number; tH: number; data: number[] } | null = null;
+
 /** 当前粒子动画的“立即中止”句柄（由 runGlow 注册；cancelGlowParticles 调用）。 */
 let cancelGlowFn: (() => void) | null = null;
 
-/** 立即中止粒子动画并复原页面（呼出打断关闭时调用——不触发 onDone，窗口保持显示）。 */
+/** 立即中止粒子动画并复原页面（呼出打断关闭时调用——不触发 onDone，窗口保持显示）。
+ *  若粒子层窗口在播放（remote 模式），一并通知其停止隐藏。 */
 export function cancelGlowParticles(): void {
+  emit("particles-cancel").catch(() => {});
   const c = cancelGlowFn;
   cancelGlowFn = null;
   if (c) {
@@ -81,8 +90,15 @@ export function bumpGlowGen(): void {
   glowGen++;
 }
 
-/** 请求播放「粒子光效消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。 */
-export function requestGlowDissolveClose(onDone: () => void, particleDensity = 50, speed = 100): void {
+/** 请求播放「粒子光效消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。
+ * remote = true 时：本窗口只播放 mask 消散，粒子交给全屏透明粒子层窗口渲染
+ * （粒子可飘出便签矩形边界、在整个屏幕自由飘散）。 */
+export function requestGlowDissolveClose(
+  onDone: () => void,
+  particleDensity = 50,
+  speed = 100,
+  remote = false,
+): void {
   const root = document.querySelector(".note-window") as HTMLElement | null;
   if (!root || glowActive) {
     onDone();
@@ -108,16 +124,68 @@ export function requestGlowDissolveClose(onDone: () => void, particleDensity = 5
     done = true; // 阻止 onDone：finish() 不会被调用，窗口保持显示
     glowActive = false;
   };
-  try {
-    stopRun = runGlow(root, particleDensity, speed, () => {
+  void (async () => {
+    // remote：先确认全屏粒子层窗口可用（存在且能 show），可用才把粒子交给它；
+    // 不可用则回退 self（粒子画在便签窗口内），保证动画不丢粒子。
+    let useRemote = false;
+    if (remote && !aborted) {
+      try {
+        const layer = await WebviewWindow.getByLabel("particles");
+        if (layer) {
+          await layer.show();
+          useRemote = true;
+        }
+      } catch {
+        useRemote = false;
+      }
+    }
+    if (aborted) return;
+    try {
+      stopRun = runGlow(root, particleDensity, speed, () => {
+        window.clearTimeout(watchdog);
+        safeDone();
+      }, useRemote ? "remote" : "self");
+      // remote：把颜色场 + 消散时间场 + 便签屏幕位置/尺寸发给粒子层窗口
+      if (useRemote && !aborted) {
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        try {
+          const field = await buildColorField(root, w, h);
+          const tfield = lastTField;
+          let originX = 0;
+          let originY = 0;
+          try {
+            const pos = await getCurrentWindow().outerPosition();
+            originX = pos.x / dpr;
+            originY = pos.y / dpr;
+          } catch {
+            /* 取不到位置则按屏幕原点 */
+          }
+          emit("particles-start", {
+            originX,
+            originY,
+            width: w,
+            height: h,
+            fieldW: field?.fw ?? 8,
+            fieldH: field?.fh ?? 8,
+            fieldData: field ? Array.from(field.data) : [],
+            tW: tfield?.tW ?? 8,
+            tH: tfield?.tH ?? 8,
+            tField: tfield?.data ?? [],
+            density: particleDensity,
+            speed,
+          }).catch(() => {});
+        } catch {
+          /* 颜色场构建失败：粒子层按兜底亮白渲染，动画仍能完成 */
+        }
+      }
+    } catch (e) {
+      console.error("粒子光效消散动画异常:", e);
       window.clearTimeout(watchdog);
       safeDone();
-    });
-  } catch (e) {
-    console.error("粒子光效消散动画异常:", e);
-    window.clearTimeout(watchdog);
-    safeDone();
-  }
+    }
+  })();
 }
 
 // ---- 颜色工具：采样到的主题色提亮到足够发光的明度（保留色相）----
@@ -267,8 +335,10 @@ function runGlow(
   particleDensity: number,
   speed: number,
   onDone: () => void,
+  mode: "self" | "remote" = "self",
 ): () => void {
   const myGen = ++glowGen; // 本动画实例代次：作废上一轮遗留的延时清理
+  const remote = mode === "remote";
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = window.innerWidth;
   const h = window.innerHeight;
@@ -280,107 +350,116 @@ function runGlow(
   const secondBatchAt = Math.round(960 * k); // 第二批区域在动画 ~40% 时起爆
   const duration = Math.round(2400 * k); // 总时长（后半段透明度淡出代替铺满全窗）
 
-  // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）----
-  const canvas = document.createElement("canvas");
-  canvas.className = "glow-particles-canvas";
-  canvas.width = Math.max(1, Math.round(w * dpr));
-  canvas.height = Math.max(1, Math.round(h * dpr));
-  canvas.style.position = "fixed";
-  canvas.style.left = "0";
-  canvas.style.top = "0";
-  canvas.style.width = "100%";
-  canvas.style.height = "100%";
-  canvas.style.zIndex = "2147483647";
-  canvas.style.pointerEvents = "none";
-  canvas.style.transform = "translateZ(0)";
-  document.body.appendChild(canvas);
-  const glOpts: WebGLContextAttributes = { alpha: true, premultipliedAlpha: false, antialias: false, depth: false };
-  const gl = (canvas.getContext("webgl", glOpts) ||
-    (canvas.getContext("experimental-webgl" as "webgl", glOpts) as unknown as WebGLRenderingContext | null)) as WebGLRenderingContext | null;
-  if (!gl) {
-    canvas.remove();
-    finishEarly();
-    return () => {};
-  }
-  // 顶点：设备像素坐标 → clip 空间；用 gl_PointSize 当点直径；片元用 gl_PointCoord 画软圆辉光
-  const VS_SRC = `
-    attribute vec2 a_pos;     // 设备像素坐标
-    attribute vec2 a_param;   // x=直径(设备px) y=alpha
-    attribute vec3 a_color;   // rgb 0~1
-    uniform vec2 u_res;       // canvas 设备尺寸
-    varying float v_alpha;
-    varying vec3 v_color;
-    void main() {
-      vec2 clip = (a_pos / u_res) * 2.0 - 1.0;
-      clip.y = -clip.y;       // 设备 y 向下，翻转
-      gl_Position = vec4(clip, 0.0, 1.0);
-      gl_PointSize = a_param.x;
-      v_alpha = a_param.y;
-      v_color = a_color;
-    }`;
-  const FS_SRC = `
-    precision mediump float;
-    varying float v_alpha;
-    varying vec3 v_color;
-    void main() {
-      vec2 d = gl_PointCoord - vec2(0.5);
-      float r2 = dot(d, d);
-      if (r2 > 0.25) discard;
-      // 清晰圆形光点：亮核直径 = psize（占点尺寸 60%），边缘羽化 —— 圆点独立可辨
-      float r = sqrt(r2);
-      float a = clamp((0.3 - r) / 0.06, 0.0, 1.0);
-      gl_FragColor = vec4(v_color * 1.5, v_alpha * a);
-    }`;
-  const compileGL = (type: number, src: string): WebGLShader | null => {
-    const sh = gl.createShader(type);
-    if (!sh) return null;
-    gl.shaderSource(sh, src);
-    gl.compileShader(sh);
-    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
-      console.warn("[glow] shader compile failed:", gl.getShaderInfoLog(sh));
-      return null;
+  // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）。
+  // remote 模式（粒子交给全屏透明粒子层窗口渲染，可飘出便签边界）下本窗口不建 canvas/GL。----
+  let canvas: HTMLCanvasElement | null = null;
+  let gl: WebGLRenderingContext | null = null;
+  let loseGL = () => {};
+  let aPosLoc = 0;
+  let aParamLoc = 0;
+  let aColorLoc = 0;
+  let glBuf: WebGLBuffer | null = null;
+  if (!remote) {
+    canvas = document.createElement("canvas");
+    canvas.className = "glow-particles-canvas";
+    canvas.width = Math.max(1, Math.round(w * dpr));
+    canvas.height = Math.max(1, Math.round(h * dpr));
+    canvas.style.position = "fixed";
+    canvas.style.left = "0";
+    canvas.style.top = "0";
+    canvas.style.width = "100%";
+    canvas.style.height = "100%";
+    canvas.style.zIndex = "2147483647";
+    canvas.style.pointerEvents = "none";
+    canvas.style.transform = "translateZ(0)";
+    document.body.appendChild(canvas);
+    const glOpts: WebGLContextAttributes = { alpha: true, premultipliedAlpha: false, antialias: false, depth: false };
+    gl = (canvas.getContext("webgl", glOpts) ||
+      (canvas.getContext("experimental-webgl" as "webgl", glOpts) as unknown as WebGLRenderingContext | null)) as WebGLRenderingContext | null;
+    if (!gl) {
+      canvas.remove();
+      finishEarly();
+      return () => {};
     }
-    return sh;
-  };
-  const glVS = compileGL(gl.VERTEX_SHADER, VS_SRC);
-  const glFS = compileGL(gl.FRAGMENT_SHADER, FS_SRC);
-  if (!glVS || !glFS) {
-    canvas.remove();
-    finishEarly();
-    return () => {};
+    // 顶点：设备像素坐标 → clip 空间；用 gl_PointSize 当点直径；片元用 gl_PointCoord 画软圆辉光
+    const VS_SRC = `
+      attribute vec2 a_pos;     // 设备像素坐标
+      attribute vec2 a_param;   // x=直径(设备px) y=alpha
+      attribute vec3 a_color;   // rgb 0~1
+      uniform vec2 u_res;       // canvas 设备尺寸
+      varying float v_alpha;
+      varying vec3 v_color;
+      void main() {
+        vec2 clip = (a_pos / u_res) * 2.0 - 1.0;
+        clip.y = -clip.y;       // 设备 y 向下，翻转
+        gl_Position = vec4(clip, 0.0, 1.0);
+        gl_PointSize = a_param.x;
+        v_alpha = a_param.y;
+        v_color = a_color;
+      }`;
+    const FS_SRC = `
+      precision mediump float;
+      varying float v_alpha;
+      varying vec3 v_color;
+      void main() {
+        vec2 d = gl_PointCoord - vec2(0.5);
+        float r2 = dot(d, d);
+        if (r2 > 0.25) discard;
+        float r = sqrt(r2);
+        float a = clamp((0.3 - r) / 0.06, 0.0, 1.0);
+        gl_FragColor = vec4(v_color * 1.5, v_alpha * a);
+      }`;
+    const compileGL = (type: number, src: string): WebGLShader | null => {
+      const sh = gl!.createShader(type);
+      if (!sh) return null;
+      gl!.shaderSource(sh, src);
+      gl!.compileShader(sh);
+      if (!gl!.getShaderParameter(sh, gl!.COMPILE_STATUS)) {
+        console.warn("[glow] shader compile failed:", gl!.getShaderInfoLog(sh));
+        return null;
+      }
+      return sh;
+    };
+    const glVS = compileGL(gl.VERTEX_SHADER, VS_SRC);
+    const glFS = compileGL(gl.FRAGMENT_SHADER, FS_SRC);
+    if (!glVS || !glFS) {
+      canvas.remove();
+      finishEarly();
+      return () => {};
+    }
+    const glProg = gl.createProgram();
+    if (!glProg) {
+      canvas.remove();
+      finishEarly();
+      return () => {};
+    }
+    gl.attachShader(glProg, glVS);
+    gl.attachShader(glProg, glFS);
+    gl.linkProgram(glProg);
+    if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) {
+      console.warn("[glow] program link failed:", gl.getProgramInfoLog(glProg));
+      canvas.remove();
+      finishEarly();
+      return () => {};
+    }
+    gl.useProgram(glProg);
+    aPosLoc = gl.getAttribLocation(glProg, "a_pos");
+    aParamLoc = gl.getAttribLocation(glProg, "a_param");
+    aColorLoc = gl.getAttribLocation(glProg, "a_color");
+    gl.uniform2f(gl.getUniformLocation(glProg, "u_res"), canvas.width, canvas.height);
+    glBuf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, glBuf);
+    gl.viewport(0, 0, canvas.width, canvas.height);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // additive 辉光（非预乘）
+    let glLost = false;
+    loseGL = () => {
+      if (glLost) return;
+      glLost = true;
+      const ext = gl!.getExtension("WEBGL_lose_context");
+      if (ext) ext.loseContext();
+    };
   }
-  const glProg = gl.createProgram();
-  if (!glProg) {
-    canvas.remove();
-    finishEarly();
-    return () => {};
-  }
-  gl.attachShader(glProg, glVS);
-  gl.attachShader(glProg, glFS);
-  gl.linkProgram(glProg);
-  if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) {
-    console.warn("[glow] program link failed:", gl.getProgramInfoLog(glProg));
-    canvas.remove();
-    finishEarly();
-    return () => {};
-  }
-  gl.useProgram(glProg);
-  const aPosLoc = gl.getAttribLocation(glProg, "a_pos");
-  const aParamLoc = gl.getAttribLocation(glProg, "a_param");
-  const aColorLoc = gl.getAttribLocation(glProg, "a_color");
-  gl.uniform2f(gl.getUniformLocation(glProg, "u_res"), canvas.width, canvas.height);
-  const glBuf = gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER, glBuf);
-  gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // additive 辉光（非预乘）
-  let glLost = false;
-  const loseGL = () => {
-    if (glLost) return;
-    glLost = true;
-    const ext = gl.getExtension("WEBGL_lose_context");
-    if (ext) ext.loseContext();
-  };
 
   // ---- 颜色场（异步构建；之后按生成区域采样）----
   let field: ColorField | null = null;
@@ -513,6 +592,10 @@ function runGlow(
       const nx = (mx + 0.5) / maskScale;
       Tfield[my * mw + mx] = dissolveTimeAt(nx, ny);
     }
+  }
+  // remote 模式：把 T 场交给全屏粒子层窗口，使粒子生成时机与便签 mask 消散同步
+  if (remote) {
+    lastTField = { tW: mw, tH: mh, data: Array.from(Tfield) };
   }
 
   // ---- mask 裁切：把 T 场逐像素 alpha 渲染到蒙版 canvas，驱动便签平滑消散 ----
@@ -674,7 +757,7 @@ function runGlow(
     // 多次后 GPU 内存累积会压垮渲染进程（崩溃页哭脸 + 白屏）。
     stopLoop();
     try {
-      canvas.remove();
+      canvas?.remove();
     } catch {
       /* ignore */
     }
@@ -704,79 +787,82 @@ function runGlow(
       const p = Math.min(1, (age - fadeHalf) / fadeHalf);
       root.style.opacity = (1 - 0.5 * p).toFixed(3);
     }
-    // 按粒子数量节流发射：density 越低，保留的发射点比例越小（整面均匀变稀）；
-    // 配合上面的峰值上限 maxP，粒子数随 density 在 ≈1.5%~100% 区间近似线性变化。
-    const keepProb = Math.max(0.015, density);
-    const b1 = Math.min(binCount - 1, Math.floor(age / binSize));
-    for (let b = 0; b <= b1; b++) {
-      const pts = binPts[b];
-      for (let z = 0; z < pts.length; z++) {
-        const idx = pts[z];
-        if (emitDone[idx] === 0) {
-          emitDone[idx] = 1;
-          if (Math.random() < keepProb) spawn(emitX[idx], emitY[idx], age);
+    // ---- 粒子（仅 self 模式在本窗口渲染；remote 模式粒子由全屏粒子层窗口渲染）----
+    if (!remote) {
+      // 按粒子数量节流发射：density 越低，保留的发射点比例越小（整面均匀变稀）；
+      // 配合上面的峰值上限 maxP，粒子数随 density 在 ≈1.5%~100% 区间近似线性变化。
+      const keepProb = Math.max(0.015, density);
+      const b1 = Math.min(binCount - 1, Math.floor(age / binSize));
+      for (let b = 0; b <= b1; b++) {
+        const pts = binPts[b];
+        for (let z = 0; z < pts.length; z++) {
+          const idx = pts[z];
+          if (emitDone[idx] === 0) {
+            emitDone[idx] = 1;
+            if (Math.random() < keepProb) spawn(emitX[idx], emitY[idx], age);
+          }
         }
       }
-    }
 
-    // ---- 粒子：物理更新 + GPU 单次 draw call 绘制（additive 辉光）----
-    gl.clearColor(0, 0, 0, 0);
-    gl.clear(gl.COLOR_BUFFER_BIT);
-    const globalFade = age > duration - 200 ? Math.max(0, (duration - age) / 200) : 1;
-    let drawCount = 0;
-    for (let i = 0; i < pcount; i++) {
-      const a = page[i] + dt * 1000;
-      page[i] = a;
-      const life = plife[i];
-      const u = a / life;
-      if (u >= 1) {
-        const last = --pcount;
-        if (i !== last) {
-          px[i] = px[last]; py[i] = py[last]; pang[i] = pang[last];
-          pv0[i] = pv0[last]; pv1[i] = pv1[last]; plife[i] = plife[last];
-          page[i] = page[last]; psize[i] = psize[last]; pseed[i] = pseed[last];
-          psway[i] = psway[last]; pr[i] = pr[last]; pg[i] = pg[last]; pb[i] = pb[last];
+      // ---- 粒子：物理更新 + GPU 单次 draw call 绘制（additive 辉光）----
+      gl!.clearColor(0, 0, 0, 0);
+      gl!.clear(gl!.COLOR_BUFFER_BIT);
+      const globalFade = age > duration - 200 ? Math.max(0, (duration - age) / 200) : 1;
+      let drawCount = 0;
+      for (let i = 0; i < pcount; i++) {
+        const a = page[i] + dt * 1000;
+        page[i] = a;
+        const life = plife[i];
+        const u = a / life;
+        if (u >= 1) {
+          const last = --pcount;
+          if (i !== last) {
+            px[i] = px[last]; py[i] = py[last]; pang[i] = pang[last];
+            pv0[i] = pv0[last]; pv1[i] = pv1[last]; plife[i] = plife[last];
+            page[i] = page[last]; psize[i] = psize[last]; pseed[i] = pseed[last];
+            psway[i] = psway[last]; pr[i] = pr[last]; pg[i] = pg[last]; pb[i] = pb[last];
+          }
+          i--;
+          continue;
         }
-        i--;
-        continue;
+        // 等加速上升 + 轻柔水平摆动：粒子越过便签矩形边界后继续自由飘散，
+        // 无边界销毁约束，仅靠寿命末段透明度衰减自然淡出
+        const speed = pv0[i] + pv1[i] * (a / 1000);
+        const dx = Math.sin(pang[i]);
+        const dy = -Math.cos(pang[i]); // 向上为负 y
+        const sway = Math.sin(a * 0.004 + pseed[i]) * 40; // 水平轻摆 ±40px/s（轨迹灵动）
+        px[i] += (dx * speed + psway[i] + sway) * dt;
+        py[i] += dy * speed * dt;
+        const t = 1 - u;
+        const alpha = t * Math.pow(t, 0.2) * globalFade;
+        if (alpha < 0.02) continue;
+        const haloR = psize[i] * 1.25;
+        const o = drawCount * 7;
+        glData[o] = px[i] * dpr;
+        glData[o + 1] = py[i] * dpr;
+        glData[o + 2] = haloR * 2 * dpr;
+        glData[o + 3] = alpha;
+        glData[o + 4] = pr[i];
+        glData[o + 5] = pg[i];
+        glData[o + 6] = pb[i];
+        drawCount++;
       }
-      // 等加速上升 + 轻柔水平摆动：粒子越过便签矩形边界后继续自由飘散，
-      // 无边界销毁约束，仅靠寿命末段透明度衰减自然淡出
-      const speed = pv0[i] + pv1[i] * (a / 1000);
-      const dx = Math.sin(pang[i]);
-      const dy = -Math.cos(pang[i]); // 向上为负 y
-      const sway = Math.sin(a * 0.004 + pseed[i]) * 40; // 水平轻摆 ±40px/s（轨迹灵动）
-      px[i] += (dx * speed + psway[i] + sway) * dt;
-      py[i] += dy * speed * dt;
-      const t = 1 - u;
-      const alpha = t * Math.pow(t, 0.2) * globalFade;
-      if (alpha < 0.02) continue;
-      const haloR = psize[i] * 1.25;
-      const o = drawCount * 7;
-      glData[o] = px[i] * dpr;
-      glData[o + 1] = py[i] * dpr;
-      glData[o + 2] = haloR * 2 * dpr;
-      glData[o + 3] = alpha;
-      glData[o + 4] = pr[i];
-      glData[o + 5] = pg[i];
-      glData[o + 6] = pb[i];
-      drawCount++;
-    }
-    if (drawCount > 0) {
-      gl.bindBuffer(gl.ARRAY_BUFFER, glBuf);
-      gl.bufferData(gl.ARRAY_BUFFER, glData.subarray(0, drawCount * 7), gl.DYNAMIC_DRAW);
-      gl.enableVertexAttribArray(aPosLoc);
-      gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 28, 0);
-      gl.enableVertexAttribArray(aParamLoc);
-      gl.vertexAttribPointer(aParamLoc, 2, gl.FLOAT, false, 28, 8);
-      gl.enableVertexAttribArray(aColorLoc);
-      gl.vertexAttribPointer(aColorLoc, 3, gl.FLOAT, false, 28, 16);
-      gl.drawArrays(gl.POINTS, 0, drawCount);
+      if (drawCount > 0) {
+        gl!.bindBuffer(gl!.ARRAY_BUFFER, glBuf);
+        gl!.bufferData(gl!.ARRAY_BUFFER, glData.subarray(0, drawCount * 7), gl!.DYNAMIC_DRAW);
+        gl!.enableVertexAttribArray(aPosLoc);
+        gl!.vertexAttribPointer(aPosLoc, 2, gl!.FLOAT, false, 28, 0);
+        gl!.enableVertexAttribArray(aParamLoc);
+        gl!.vertexAttribPointer(aParamLoc, 2, gl!.FLOAT, false, 28, 8);
+        gl!.enableVertexAttribArray(aColorLoc);
+        gl!.vertexAttribPointer(aColorLoc, 3, gl!.FLOAT, false, 28, 16);
+        gl!.drawArrays(gl!.POINTS, 0, drawCount);
+      }
     }
 
     if (age >= duration) {
-      gl.clearColor(0, 0, 0, 0);
-      gl.clear(gl.COLOR_BUFFER_BIT);
+      gl?.clearColor(0, 0, 0, 0);
+      gl?.clear(gl!.COLOR_BUFFER_BIT);
       stopLoop();
       try {
         onDone(); // 触发真正隐藏窗口
@@ -833,7 +919,7 @@ function runGlow(
     stopLoop();
     restoreRoot(root);
     try {
-      canvas.remove();
+      canvas?.remove();
     } catch {
       /* ignore */
     }
