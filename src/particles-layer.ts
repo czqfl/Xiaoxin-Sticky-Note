@@ -175,17 +175,18 @@ const respawnCylinder = (i: number, atAge: number): void => {
 };
 
 // ---- vortex：中心点圆形扩张 + 圆盘内粒子绕心旋转吸入 ----
-// 粒子消散式：粒子在生成位置（便签该处背景）取色，随后**带着这个颜色**旋转飘散
-// （颜色固定跟随粒子，不随旋转位置改变）——与粒子消散动画一致。
+// 粒子消散式：粒子在生成位置（便签该处背景）取色，随后**带着这个颜色**旋转飘散；
+// 半径 = 当前圆盘半径 × 比例（跟随扩张铺满整个已粒子化圆盘），再向中心吸入收缩。
 const respawnVortex = (i: number, atAge: number, curR: number): void => {
   pbirth[i] = atAge;
   pth[i] = Math.random() * Math.PI * 2;
   plife[i] = Math.round((900 + Math.random() * 600) * k);
   psize[i] = 2.0;
-  prad[i] = curR * Math.sqrt(Math.random()); // 铺满整个圆盘（绝对半径）
-  // 生成处取色：粒子出生位置（当前圆盘该半径处）对应的便签背景色
-  const sx0 = cx + prad[i] * Math.cos(pth[i]);
-  const sy0 = cy + prad[i] * Math.sin(pth[i]);
+  prad[i] = Math.sqrt(Math.random()); // 圆盘面积均匀的比例（0~1，跟随 curR 扩张）
+  // 生成处取色：出生位置（当前圆盘该半径处）对应的便签背景色
+  const r0 = curR * prad[i];
+  const sx0 = cx + r0 * Math.cos(pth[i]);
+  const sy0 = cy + r0 * Math.sin(pth[i]);
   const [r, g, b] = sampleColor(sx0 - originX, sy0 - originY);
   pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
 };
@@ -421,7 +422,7 @@ const frame = (now: number): void => {
       const theta = pth[i] + omega * (age / 1000);
       const t = a / plife[i];
       const shrink = t * t;
-      const r = prad[i] * (1 - 0.92 * shrink);
+      const r = curR * prad[i] * (1 - 0.92 * shrink); // 跟随当前圆盘扩张 + 向中心吸入收缩
       const sx = cx + r * Math.cos(theta);
       const sy = cy + r * Math.sin(theta);
       const fadeIn = Math.min(1, a / 150);

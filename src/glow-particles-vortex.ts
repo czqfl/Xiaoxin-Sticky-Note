@@ -503,10 +503,11 @@ function runVortex(
       pth[i] = Math.random() * Math.PI * 2;
       plife[i] = Math.round((900 + Math.random() * 600) * k); // 寿命随速度缩放
       psize[i] = 2.0;
-      pfrac[i] = curR * Math.sqrt(Math.random()); // 铺满整个圆盘（绝对半径）
+      pfrac[i] = Math.sqrt(Math.random()); // 圆盘面积均匀的比例（0~1，跟随 curR 扩张）
       // 生成处取色：出生位置（当前圆盘该半径处）对应的便签背景色
-      const sx0 = cx + pfrac[i] * Math.cos(pth[i]);
-      const sy0 = cy + pfrac[i] * Math.sin(pth[i]);
+      const r0 = curR * pfrac[i];
+      const sx0 = cx + r0 * Math.cos(pth[i]);
+      const sy0 = cy + r0 * Math.sin(pth[i]);
       const [r, g, b] = sampleThemeColor(sx0, sy0);
       pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
     };
@@ -607,7 +608,7 @@ function runVortex(
         const theta = pth[i] + omega * (age / 1000); // 绕心顺时针旋转
         const t = a / plife[i];                      // 寿命进度 0→1
         const shrink = t * t;                        // 吸入收缩（ease-in：先慢后快 → 旋涡内吸）
-        const r = pfrac[i] * (1 - 0.92 * shrink);    // 锁定出生半径向中心回收
+        const r = curR * pfrac[i] * (1 - 0.92 * shrink); // 跟随当前圆盘扩张 + 向中心吸入收缩
         const sx = cx + r * Math.cos(theta);         // 屏幕 x
         const sy = cy + r * Math.sin(theta);         // 屏幕 y
         const fadeIn = Math.min(1, a / 150);         // 出生淡入
