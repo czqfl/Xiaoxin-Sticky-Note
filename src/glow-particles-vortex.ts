@@ -7,10 +7,10 @@
 // 视觉要点（对齐需求）：
 // - **中心点起爆、圆形扩张**：粒子化前缘为以屏幕中心为圆心的圆，半径由 0 平滑扩张至覆盖整幅
 //   （ease-out 二次曲线）；便签被圆覆盖的原始区域真正消失（mask 径向擦除，边缘羽化）。
-// - **已粒子化区域的粒子旋转**：粒子出生时锁定一个截面半径比例（0~1，面积均匀），实际半径 =
-//   当前粒子化前缘 curR × 比例 —— 粒子始终均匀铺满整个已粒子化圆盘，随圆盘扩张一起长大、
-//   同时绕心顺时针旋转（刚体圆盘感：外圈线速度快、内圈慢），持续消散、在圆盘内他处重生。
-// - 粒子亮度 = 出生淡入 × 寿命末段淡出 × 动画末段整体淡出；颜色采样自主题色，additive 辉光。
+// - **旋转吸入（旋涡）**：粒子在圆盘外缘（比例 0.55~1）出生，绕心顺时针旋转的同时轨道半径
+//   随年龄收缩（ease-in：先慢后快）→ 被吸入中心，寿命末段在中心附近消散、重生到外缘再被吸入；
+//   粒子化前缘宽羽化，边缘柔和不成整齐圆线。
+// - 粒子颜色**每帧按粒子实际位置采样**后面背景色（additive 辉光），随位置变化跟随后面背景。
 //
 // 工程契约：复用粒子光效基础设施（WebGL 单次 draw call 点精灵 + 颜色场 + 代次守卫 + 看门狗）；
 // cancelVortexParticles() 立即中止（停帧+复原页面、不触发 onDone），供“呼出打断关闭”；
@@ -391,35 +391,28 @@ function runVortex(
   const maxR = Math.hypot(w, h) / 2; // 最大半径：覆盖整幅（含四角）
   const omega = (Math.PI * 2 * 2) / (duration / 1000); // 粒子绕心角速度：全程约 2 圈（rad/s，顺时针）
 
-  // ---- 粒子池（SoA）：所有粒子锁定一个截面半径比例（0~1 面积均匀），实际半径 = 当前粒子化
-  // 前缘 curR × 比例 —— 粒子始终均匀铺满整个已粒子化圆盘并随扩张长大（不会全堆中心、
-  // 也不会全跑外缘），绕心旋转、消散后在圆盘内他处重生。----
-  const N = Math.round(8000 + density * 38000);
+  // ---- 粒子池（SoA）：粒子出生偏向圆盘外缘（比例 0.55~1），实际半径 = 当前粒子化前缘 curR
+  // × 比例 × 吸入收缩 —— 粒子一边绕心旋转一边被吸入中心（旋涡），寿命末段在中心附近消散、
+  // 重生到外缘再被吸入；颜色每帧按粒子实际位置采样（跟随后面背景）。----
+  const N = Math.round(4000 + density * 18000); // 涡旋密度调疏（用户反馈太稠）
   const maxP = Math.max(N + 64, 256);
   const pth = new Float32Array(maxP);    // 初始圆周角 θ₀（绕心旋转）
-  const pfrac = new Float32Array(maxP);  // 截面半径比例（0~1，面积均匀）；实际半径 = curR × 比例
+  const pfrac = new Float32Array(maxP);  // 截面半径比例（0.55~1，偏外缘）；实际半径 = curR × 比例 × 收缩
   const pbirth = new Float32Array(maxP); // 出生时刻（相对动画起点的 age，ms）
   const plife = new Float32Array(maxP);  // 寿命 ms
   const psize = new Float32Array(maxP);  // 基础像素尺寸
-  const pr = new Float32Array(maxP);
-  const pg = new Float32Array(maxP);
-  const pb = new Float32Array(maxP);
   const glData = new Float32Array(maxP * 7);
 
-  // 在已粒子化圆盘内重生一粒：随机半径比例（面积均匀）/角度/主题色，赋予随机寿命
+  // 在已粒子化圆盘外缘重生一粒：随机角度、偏外缘比例、随机寿命（颜色在帧内按实际位置采样）
   const respawn = (i: number, atAge: number): void => {
     pbirth[i] = atAge;
     pth[i] = Math.random() * Math.PI * 2;
-    plife[i] = 1000 + Math.random() * 700;
+    plife[i] = 900 + Math.random() * 600;
     psize[i] = 2.0;
-    pfrac[i] = Math.sqrt(Math.random()); // 圆盘面积均匀 → 实心圆盘
-    const bx = cx + pfrac[i] * Math.cos(pth[i]);
-    const by = cy + pfrac[i] * Math.sin(pth[i]);
-    const [r, g, b] = sampleThemeColor(bx, by);
-    pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
+    pfrac[i] = 0.55 + 0.45 * Math.sqrt(Math.random()); // 偏外缘出生 → 被吸入中心
   };
   for (let i = 0; i < N; i++) {
-    respawn(i, Math.random() * 240); // 开头 0~240ms 内陆续出生（初始圆盘很小，粒子自然集中中心）
+    respawn(i, Math.random() * 240); // 开头 0~240ms 内陆续出生
   }
 
   // ---- 帧循环控制 ----
@@ -485,8 +478,8 @@ function runVortex(
       root.style.webkitMaskImage = "linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,0))";
       root.style.maskImage = "linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,0))";
     } else {
-      // mask：圆内透明（隐藏=已粒子化擦除）、圆外 #000（显示），前缘羽化
-      const feather = 6;
+      // mask：圆内透明（隐藏=已粒子化擦除）、圆外 #000（显示），前缘宽羽化（边缘柔和不呈圆线）
+      const feather = 28;
       const inner = Math.max(0, curR - feather);
       const maskCss =
         `radial-gradient(circle at ${cx}px ${cy}px, rgba(0,0,0,0) 0%, rgba(0,0,0,0) ${inner}px,` +
@@ -495,7 +488,8 @@ function runVortex(
       root.style.maskImage = maskCss;
     }
 
-    // ---- 粒子：已粒子化圆盘内绕心顺时针旋转、消散、重生；圆盘随前缘扩张而完整 ----
+    // ---- 粒子：在已粒子化圆盘内出生（偏外缘）→ 绕心旋转同时被吸入中心（旋涡）→ 寿命末段
+    // 在中心附近消散、重生到外缘；颜色每帧按粒子实际位置采样（跟随后面背景色）----
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     const globalFade = age > duration - 300 ? Math.max(0, (duration - age) / 300) : 1; // 末段整体淡出
@@ -503,28 +497,30 @@ function runVortex(
     for (let i = 0; i < N; i++) {
       let a = age - pbirth[i];
       if (a < 0) continue;            // 尚未出生
-      if (a >= plife[i]) {            // 寿命到 → 在已粒子化圆盘内他处重生（不息）
+      if (a >= plife[i]) {            // 寿命到 → 在圆盘外缘重生（不息）
         respawn(i, age);
         a = 0;
       }
-      const theta = pth[i] + omega * (age / 1000); // 绕心顺时针旋转（刚体圆盘）
-      const r = curR * pfrac[i];                   // 实际半径 = 当前前缘 × 比例：随圆盘扩张长大
+      const theta = pth[i] + omega * (age / 1000); // 绕心顺时针旋转
+      const t = a / plife[i];                      // 寿命进度 0→1
+      const shrink = t * t;                        // 吸入收缩（ease-in：先慢后快 → 旋涡内吸）
+      const r = curR * pfrac[i] * (1 - 0.92 * shrink); // 轨道半径随年龄向中心收缩
       const sx = cx + r * Math.cos(theta);         // 屏幕 x
       const sy = cy + r * Math.sin(theta);         // 屏幕 y
       const fadeIn = Math.min(1, a / 150);         // 出生淡入
-      const u = a / plife[i];
-      const lifeFade = u > 0.7 ? Math.max(0, (1 - u) / 0.3) : 1; // 末段消散
+      const lifeFade = t > 0.7 ? Math.max(0, (1 - t) / 0.3) : 1; // 末段消散
       const alpha = fadeIn * lifeFade * globalFade;
       if (alpha < 0.02) continue;
+      const col = sampleThemeColor(sx, sy);        // 每帧按实际位置采样背景色
       const haloR = psize[i] * (0.6 + 0.4 * fadeIn);
       const o = drawCount * 7;
       glData[o] = sx * dpr;
       glData[o + 1] = sy * dpr;
       glData[o + 2] = haloR * 2 * dpr;
       glData[o + 3] = alpha;
-      glData[o + 4] = pr[i];
-      glData[o + 5] = pg[i];
-      glData[o + 6] = pb[i];
+      glData[o + 4] = col[0] / 255;
+      glData[o + 5] = col[1] / 255;
+      glData[o + 6] = col[2] / 255;
       drawCount++;
     }
     if (drawCount > 0) {
