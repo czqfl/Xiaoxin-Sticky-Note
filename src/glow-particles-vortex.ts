@@ -475,12 +475,15 @@ function runVortex(
   // （跟随后面背景）。remote 模式：粒子交给全屏粒子层窗口渲染（屏幕坐标，不被窗口框住）。
   let N = 0;
   let pth = new Float32Array(0);    // 初始圆周角 θ₀（绕心旋转）
-  let pfrac = new Float32Array(0);  // 截面半径比例（0~1 面积均匀）；实际半径 = curR × 比例 × 收缩
+  let pfrac = new Float32Array(0);  // 出生半径（绝对 px，铺满圆盘）；实际半径 = pfrac × 吸入收缩
   let pbirth = new Float32Array(0); // 出生时刻（相对动画起点的 age，ms）
   let plife = new Float32Array(0);  // 寿命 ms
   let psize = new Float32Array(0);  // 基础像素尺寸
+  let pr = new Float32Array(0);     // 粒子颜色（生成位置背景色，带色飘散）
+  let pg = new Float32Array(0);
+  let pb = new Float32Array(0);
   let glData = new Float32Array(0);
-  let respawn: (i: number, atAge: number) => void = () => {};
+  let respawn: (i: number, atAge: number, curR: number) => void = () => {};
   if (!remote) {
     N = Math.round(4000 + density * 18000); // 涡旋密度调疏（用户反馈太稠）
     const maxP = Math.max(N + 64, 256);
@@ -489,18 +492,26 @@ function runVortex(
     pbirth = new Float32Array(maxP);
     plife = new Float32Array(maxP);
     psize = new Float32Array(maxP);
+    pr = new Float32Array(maxP);
+    pg = new Float32Array(maxP);
+    pb = new Float32Array(maxP);
     glData = new Float32Array(maxP * 7);
 
-    // 在已粒子化圆盘内重生一粒：随机角度、铺满圆盘的比例（面积均匀）、随机寿命（颜色帧内采样）
-    respawn = (i: number, atAge: number): void => {
+    // 粒子消散式：在生成位置（便签该处背景）取色，随后带色旋转飘散（颜色固定跟随粒子）
+    respawn = (i: number, atAge: number, curR: number): void => {
       pbirth[i] = atAge;
       pth[i] = Math.random() * Math.PI * 2;
       plife[i] = Math.round((900 + Math.random() * 600) * k); // 寿命随速度缩放
       psize[i] = 2.0;
-      pfrac[i] = Math.sqrt(Math.random()); // 铺满整个圆盘 → 中心也被粒子化（不空）
+      pfrac[i] = curR * Math.sqrt(Math.random()); // 铺满整个圆盘（绝对半径）
+      // 生成处取色：出生位置（当前圆盘该半径处）对应的便签背景色
+      const sx0 = cx + pfrac[i] * Math.cos(pth[i]);
+      const sy0 = cy + pfrac[i] * Math.sin(pth[i]);
+      const [r, g, b] = sampleThemeColor(sx0, sy0);
+      pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
     };
     for (let i = 0; i < N; i++) {
-      respawn(i, 0); // 第一帧全部出生（fadeIn 统一淡入）
+      respawn(i, 0, maxR * 0.05); // 起始前缘 5%（fadeIn 统一淡入）
     }
   }
 
@@ -590,29 +601,29 @@ function runVortex(
         let a = age - pbirth[i];
         if (a < 0) continue;            // 尚未出生
         if (a >= plife[i]) {            // 寿命到 → 在圆盘外缘重生（不息）
-          respawn(i, age);
+          respawn(i, age, curR);
           a = 0;
         }
         const theta = pth[i] + omega * (age / 1000); // 绕心顺时针旋转
         const t = a / plife[i];                      // 寿命进度 0→1
         const shrink = t * t;                        // 吸入收缩（ease-in：先慢后快 → 旋涡内吸）
-        const r = curR * pfrac[i] * (1 - 0.92 * shrink); // 轨道半径随年龄向中心收缩
+        const r = pfrac[i] * (1 - 0.92 * shrink);    // 锁定出生半径向中心回收
         const sx = cx + r * Math.cos(theta);         // 屏幕 x
         const sy = cy + r * Math.sin(theta);         // 屏幕 y
         const fadeIn = Math.min(1, a / 150);         // 出生淡入
         const lifeFade = t > 0.7 ? Math.max(0, (1 - t) / 0.3) : 1; // 末段消散
         const alpha = fadeIn * lifeFade * globalFade;
         if (alpha < 0.02) continue;
-        const col = sampleThemeColor(sx, sy);        // 每帧按实际位置采样背景色
         const haloR = psize[i] * (0.6 + 0.4 * fadeIn);
         const o = drawCount * 7;
         glData[o] = sx * dpr;
         glData[o + 1] = sy * dpr;
         glData[o + 2] = haloR * 2 * dpr;
         glData[o + 3] = alpha;
-        glData[o + 4] = col[0] / 255;
-        glData[o + 5] = col[1] / 255;
-        glData[o + 6] = col[2] / 255;
+        // 粒子消散式：颜色 = 生成位置背景色，带色旋转飘散（固定跟随粒子）
+        glData[o + 4] = pr[i];
+        glData[o + 5] = pg[i];
+        glData[o + 6] = pb[i];
         drawCount++;
       }
       if (drawCount > 0) {

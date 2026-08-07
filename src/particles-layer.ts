@@ -175,14 +175,19 @@ const respawnCylinder = (i: number, atAge: number): void => {
 };
 
 // ---- vortex：中心点圆形扩张 + 圆盘内粒子绕心旋转吸入 ----
-// 注意：粒子颜色**不在此设置**——由 frame 每帧按粒子当前位置采样背景色决定（颜色绑定空间位置，
-// 随旋转移动实时变化），这里只设运动参数，避免初始颜色残留导致"颜色固定不变"。
-const respawnVortex = (i: number, atAge: number): void => {
+// 粒子消散式：粒子在生成位置（便签该处背景）取色，随后**带着这个颜色**旋转飘散
+// （颜色固定跟随粒子，不随旋转位置改变）——与粒子消散动画一致。
+const respawnVortex = (i: number, atAge: number, curR: number): void => {
   pbirth[i] = atAge;
   pth[i] = Math.random() * Math.PI * 2;
   plife[i] = Math.round((900 + Math.random() * 600) * k);
   psize[i] = 2.0;
-  prad[i] = Math.sqrt(Math.random()); // 铺满整个圆盘（中心也有粒子）
+  prad[i] = curR * Math.sqrt(Math.random()); // 铺满整个圆盘（绝对半径）
+  // 生成处取色：粒子出生位置（当前圆盘该半径处）对应的便签背景色
+  const sx0 = cx + prad[i] * Math.cos(pth[i]);
+  const sy0 = cy + prad[i] * Math.sin(pth[i]);
+  const [r, g, b] = sampleColor(sx0 - originX, sy0 - originY);
+  pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
 };
 
 function stopLayer(): void {
@@ -291,8 +296,9 @@ function initVortex(p: ParticleLayerStart): void {
   const d = layerDensity / 100;
   const N = Math.round(4000 + d * 18000);
   ensurePool(N + 64);
+  const initCurR = maxR * 0.05; // 起始前缘（5% 小圆）
   for (let i = 0; i < N; i++) {
-    respawnVortex(i, 0); // 第一帧全部出生（fadeIn 统一淡入）
+    respawnVortex(i, 0, initCurR); // 第一帧全部出生（fadeIn 统一淡入）
   }
   pcount = N;
 }
@@ -409,29 +415,29 @@ const frame = (now: number): void => {
       let a = age - pbirth[i];
       if (a < 0) continue;
       if (a >= plife[i]) {
-        respawnVortex(i, age);
+        respawnVortex(i, age, curR);
         a = 0;
       }
       const theta = pth[i] + omega * (age / 1000);
       const t = a / plife[i];
       const shrink = t * t;
-      const r = curR * prad[i] * (1 - 0.92 * shrink);
+      const r = prad[i] * (1 - 0.92 * shrink);
       const sx = cx + r * Math.cos(theta);
       const sy = cy + r * Math.sin(theta);
       const fadeIn = Math.min(1, a / 150);
       const lifeFade = t > 0.7 ? Math.max(0, (1 - t) / 0.3) : 1;
       const alpha = fadeIn * lifeFade * globalFade;
       if (alpha < 0.02) continue;
-      const col = sampleColor(sx - originX, sy - originY);
       const haloR = psize[i] * (0.6 + 0.4 * fadeIn);
       const o = drawCount * 7;
       glData[o] = sx * dpr;
       glData[o + 1] = sy * dpr;
       glData[o + 2] = haloR * 2 * dpr;
       glData[o + 3] = alpha;
-      glData[o + 4] = col[0] / 255;
-      glData[o + 5] = col[1] / 255;
-      glData[o + 6] = col[2] / 255;
+      // 粒子消散式：颜色 = 生成位置背景色，带色旋转飘散（固定跟随粒子）
+      glData[o + 4] = pr[i];
+      glData[o + 5] = pg[i];
+      glData[o + 6] = pb[i];
       drawCount++;
     }
   }
