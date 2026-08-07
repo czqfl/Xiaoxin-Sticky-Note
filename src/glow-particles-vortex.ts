@@ -1,0 +1,574 @@
+// 便签「涡旋消散」动画：从便签整体居中位置的一个点发起粒子化，粒子化以圆形向外扩张；
+// 已被粒子化的圆形区域内的粒子开始绕中心顺时针旋转（平面圆盘涡旋）。
+// ----------------------------------------------------------------------------
+// 触发：关闭窗口时播放（particle_mode = "vortex" 时选用）。
+// 呼出时不播放动画：直接复原便签显示（见 note.ts summoned 处理）。
+//
+// 视觉要点（对齐需求）：
+// - **中心点起爆、圆形扩张**：粒子化前缘为以屏幕中心为圆心的圆，半径由 0 平滑扩张至覆盖整幅
+//   （ease-out 二次曲线）；便签被圆覆盖的原始区域真正消失（mask 径向擦除，边缘羽化）。
+// - **已粒子化区域的粒子旋转**：粒子出生即落在已扩张圆盘内（半径 0~curR 面积均匀填充），
+//   锁定各自的截面半径绕中心顺时针旋转（刚体圆盘感：外圈线速度快、内圈慢），持续消散、
+//   在圆盘内他处重生——圆盘半径随扩张前缘固定增长，不会全堆在中心或全跑到外缘。
+// - 粒子亮度 = 出生淡入 × 寿命末段淡出 × 动画末段整体淡出；颜色采样自主题色，additive 辉光。
+//
+// 工程契约：复用粒子光效基础设施（WebGL 单次 draw call 点精灵 + 颜色场 + 代次守卫 + 看门狗）；
+// cancelVortexParticles() 立即中止（停帧+复原页面、不触发 onDone），供“呼出打断关闭”；
+// 看门狗强制收尾，杜绝动画卡死导致窗口无法关闭。
+
+let vortexActive = false;
+/** 动画代次：每次 runVortex 启动 +1。上一轮动画遗留的延时清理凭此作废。 */
+let vortexGen = 0;
+
+/** 当前动画的“立即中止”句柄。 */
+let cancelVortexFn: (() => void) | null = null;
+
+/** 立即中止粒子动画并复原页面（呼出打断关闭时调用——不触发 onDone，窗口保持显示）。 */
+export function cancelVortexParticles(): void {
+  const c = cancelVortexFn;
+  cancelVortexFn = null;
+  if (c) {
+    c();
+    return;
+  }
+  if (!vortexActive) return;
+  vortexActive = false;
+  const root = document.querySelector(".note-window") as HTMLElement | null;
+  if (root) restoreRoot(root);
+  document.querySelector(".glow-particles-canvas")?.remove();
+}
+
+/** 复原便签本体样式（裁剪 / mask / 透明度 / 阴影 还原）。 */
+function restoreRoot(root: HTMLElement): void {
+  try {
+    root.style.clipPath = "";
+    root.style.setProperty("-webkit-mask-image", "");
+    root.style.setProperty("mask-image", "");
+    root.style.opacity = "";
+    root.style.boxShadow = "";
+    root.style.transform = "";
+    root.style.backfaceVisibility = "";
+    root.style.transition = "";
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 隐藏便签本体（保持“空画面”，供下次呼出直接复原显示）。 */
+function blankRoot(root: HTMLElement): void {
+  try {
+    root.style.clipPath = "inset(0 0 100% 0)";
+    root.style.setProperty("-webkit-mask-image", "");
+    root.style.setProperty("mask-image", "");
+    root.style.opacity = "";
+    root.style.boxShadow = "none";
+    root.style.transform = "";
+    root.style.backfaceVisibility = "";
+    root.style.transition = "";
+  } catch {
+    /* ignore */
+  }
+}
+
+/** 作废上一轮动画遗留的延时清理（cleanupAfterHide）。 */
+export function bumpVortexGen(): void {
+  vortexGen++;
+}
+
+/** 请求播放「涡旋消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。 */
+export function requestVortexDissolveClose(onDone: () => void, particleDensity = 50): void {
+  const root = document.querySelector(".note-window") as HTMLElement | null;
+  if (!root || vortexActive) {
+    onDone();
+    return;
+  }
+  vortexActive = true;
+  let done = false;
+  let aborted = false;
+  let stopRun: (() => void) | null = null;
+  const safeDone = () => {
+    if (done) return;
+    done = true;
+    vortexActive = false;
+    cancelVortexFn = null;
+    onDone();
+  };
+  const watchdog = window.setTimeout(safeDone, 5000);
+  cancelVortexFn = () => {
+    if (aborted) return;
+    aborted = true;
+    window.clearTimeout(watchdog);
+    if (stopRun) stopRun();
+    done = true; // 阻止 onDone：finish() 不会被调用，窗口保持显示
+    vortexActive = false;
+  };
+  try {
+    stopRun = runVortex(root, particleDensity, () => {
+      window.clearTimeout(watchdog);
+      safeDone();
+    });
+  } catch (e) {
+    console.error("涡旋消散动画异常:", e);
+    window.clearTimeout(watchdog);
+    safeDone();
+  }
+}
+
+// ---- 颜色工具：采样到的主题色提亮到足够发光的明度（保留色相）----
+function rgbToHsl(r: number, g: number, b: number): [number, number, number] {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r, g, b);
+  const min = Math.min(r, g, b);
+  const l = (max + min) / 2;
+  let h = 0;
+  let s = 0;
+  const d = max - min;
+  if (d > 0) {
+    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+    if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h /= 6;
+  }
+  return [h, s, l];
+}
+
+function hslToRgb(h: number, s: number, l: number): [number, number, number] {
+  if (s === 0) {
+    const v = Math.round(l * 255);
+    return [v, v, v];
+  }
+  const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+  const p = 2 * l - q;
+  const hue = (t: number): number => {
+    if (t < 0) t += 1;
+    if (t > 1) t -= 1;
+    if (t < 1 / 6) return p + (q - p) * 6 * t;
+    if (t < 1 / 2) return q;
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+    return p;
+  };
+  return [
+    Math.round(hue(h + 1 / 3) * 255),
+    Math.round(hue(h) * 255),
+    Math.round(hue(h - 1 / 3) * 255),
+  ];
+}
+
+/** 让粒子颜色贴近背景实际颜色：只在背景过暗时轻微提亮到最低可见明度（保留色相）。 */
+function toGlowColor(r: number, g: number, b: number): [number, number, number] {
+  const [h, s, l] = rgbToHsl(r, g, b);
+  const nl = Math.max(l, 0.62);
+  const ns = Math.max(s, 0.3);
+  return hslToRgb(h, ns, nl);
+}
+
+interface ColorField {
+  data: Uint8ClampedArray;
+  fw: number;
+  fh: number;
+}
+
+/** 提取 CSS 变量里的 url("...") → data URL；无则返回空串。 */
+function extractUrl(prop: string): string {
+  if (!prop) return "";
+  const m = prop.match(/url\((['"]?)([\s\S]*?)\1\)/);
+  return m ? m[2] : "";
+}
+
+/**
+ * 构建便签「区域颜色场」（低分辨率）：肉眼所见背景色 = --bg 底色 +（has-bg 时）背景图 cover
+ * + 面板半透明叠加（--note-panel-alpha）。随后按粒子生成区域采样主题色。
+ */
+function buildColorField(root: HTMLElement, w: number, h: number): Promise<ColorField | null> {
+  const fw = Math.max(8, Math.min(128, Math.round(w)));
+  const fh = Math.max(8, Math.round((h * fw) / Math.max(1, w)));
+  const c = document.createElement("canvas");
+  c.width = fw;
+  c.height = fh;
+  const fctx = c.getContext("2d", { willReadFrequently: true });
+  if (!fctx) return Promise.resolve(null);
+
+  const cs = getComputedStyle(root);
+  const bgColor = cs.backgroundColor || "rgb(128,128,128)";
+  let panelAlpha = parseFloat(cs.getPropertyValue("--note-panel-alpha"));
+  if (!isFinite(panelAlpha) || panelAlpha <= 0 || panelAlpha > 1) panelAlpha = 0.7;
+  const dataUrl = extractUrl(cs.getPropertyValue("--note-bg-img"));
+
+  const readBack = (): ColorField => ({
+    data: fctx.getImageData(0, 0, fw, fh).data,
+    fw,
+    fh,
+  });
+  const fillSolid = (): void => {
+    fctx.fillStyle = bgColor;
+    fctx.fillRect(0, 0, fw, fh);
+  };
+
+  if (!dataUrl) {
+    fillSolid();
+    return Promise.resolve(readBack());
+  }
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finishWith = (withImage: HTMLImageElement | null): void => {
+      if (settled) return;
+      settled = true;
+      if (withImage && withImage.naturalWidth > 0) {
+        const iw = withImage.naturalWidth;
+        const ih = withImage.naturalHeight;
+        const ir = iw / ih;
+        const fr = fw / fh;
+        let dw: number, dh: number, dx: number, dy: number;
+        if (ir > fr) {
+          dh = fh; dw = fh * ir; dx = (fw - dw) / 2; dy = 0;
+        } else {
+          dw = fw; dh = fw / ir; dx = 0; dy = (fh - dh) / 2;
+        }
+        fctx.drawImage(withImage, dx, dy, dw, dh);
+        fctx.save();
+        fctx.globalAlpha = panelAlpha * 0.15;
+        fctx.fillStyle = bgColor;
+        fctx.fillRect(0, 0, fw, fh);
+        fctx.restore();
+      } else {
+        fillSolid();
+      }
+      resolve(readBack());
+    };
+    const img = new Image();
+    const timer = window.setTimeout(() => finishWith(null), 140);
+    img.onload = () => {
+      window.clearTimeout(timer);
+      finishWith(img);
+    };
+    img.onerror = () => {
+      window.clearTimeout(timer);
+      finishWith(null);
+    };
+    img.src = dataUrl;
+  });
+}
+
+/**
+ * 播放一次涡旋消散动画：中心点圆形扩张粒子化，已粒子化圆盘内粒子绕中心顺时针旋转。
+ */
+function runVortex(
+  root: HTMLElement,
+  particleDensity: number,
+  onDone: () => void,
+): () => void {
+  const myGen = ++vortexGen; // 本动画实例代次：作废上一轮遗留的延时清理
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  const density = Math.max(0, Math.min(100, particleDensity)) / 100;
+
+  // ---- 时序参数（整体 ~1.2s：圆形扩张 + 粒子旋转 + 透明度淡出收尾）----
+  const duration = 1200;
+
+  // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）----
+  const canvas = document.createElement("canvas");
+  canvas.className = "glow-particles-canvas";
+  canvas.width = Math.max(1, Math.round(w * dpr));
+  canvas.height = Math.max(1, Math.round(h * dpr));
+  canvas.style.position = "fixed";
+  canvas.style.left = "0";
+  canvas.style.top = "0";
+  canvas.style.width = "100%";
+  canvas.style.height = "100%";
+  canvas.style.zIndex = "2147483647";
+  canvas.style.pointerEvents = "none";
+  canvas.style.transform = "translateZ(0)";
+  document.body.appendChild(canvas);
+  const glOpts: WebGLContextAttributes = { alpha: true, premultipliedAlpha: false, antialias: false, depth: false };
+  const gl = (canvas.getContext("webgl", glOpts) ||
+    (canvas.getContext("experimental-webgl" as "webgl", glOpts) as unknown as WebGLRenderingContext | null)) as WebGLRenderingContext | null;
+  if (!gl) {
+    canvas.remove();
+    finishEarly();
+    return () => {};
+  }
+  const VS_SRC = `
+    attribute vec2 a_pos;     // 设备像素坐标
+    attribute vec2 a_param;   // x=直径(设备px) y=alpha
+    attribute vec3 a_color;   // rgb 0~1
+    uniform vec2 u_res;       // canvas 设备尺寸
+    varying float v_alpha;
+    varying vec3 v_color;
+    void main() {
+      vec2 clip = (a_pos / u_res) * 2.0 - 1.0;
+      clip.y = -clip.y;       // 设备 y 向下，翻转
+      gl_Position = vec4(clip, 0.0, 1.0);
+      gl_PointSize = a_param.x;
+      v_alpha = a_param.y;
+      v_color = a_color;
+    }`;
+  const FS_SRC = `
+    precision mediump float;
+    varying float v_alpha;
+    varying vec3 v_color;
+    void main() {
+      vec2 d = gl_PointCoord - vec2(0.5);
+      float r2 = dot(d, d);
+      if (r2 > 0.25) discard;
+      float r = sqrt(r2);
+      float a = clamp((0.3 - r) / 0.06, 0.0, 1.0);
+      gl_FragColor = vec4(v_color * 1.5, v_alpha * a);
+    }`;
+  const compileGL = (type: number, src: string): WebGLShader | null => {
+    const sh = gl.createShader(type);
+    if (!sh) return null;
+    gl.shaderSource(sh, src);
+    gl.compileShader(sh);
+    if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+      console.warn("[vortex] shader compile failed:", gl.getShaderInfoLog(sh));
+      return null;
+    }
+    return sh;
+  };
+  const glVS = compileGL(gl.VERTEX_SHADER, VS_SRC);
+  const glFS = compileGL(gl.FRAGMENT_SHADER, FS_SRC);
+  if (!glVS || !glFS) {
+    canvas.remove();
+    finishEarly();
+    return () => {};
+  }
+  const glProg = gl.createProgram();
+  if (!glProg) {
+    canvas.remove();
+    finishEarly();
+    return () => {};
+  }
+  gl.attachShader(glProg, glVS);
+  gl.attachShader(glProg, glFS);
+  gl.linkProgram(glProg);
+  if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) {
+    console.warn("[vortex] program link failed:", gl.getProgramInfoLog(glProg));
+    canvas.remove();
+    finishEarly();
+    return () => {};
+  }
+  gl.useProgram(glProg);
+  const aPosLoc = gl.getAttribLocation(glProg, "a_pos");
+  const aParamLoc = gl.getAttribLocation(glProg, "a_param");
+  const aColorLoc = gl.getAttribLocation(glProg, "a_color");
+  gl.uniform2f(gl.getUniformLocation(glProg, "u_res"), canvas.width, canvas.height);
+  const glBuf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, glBuf);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE); // additive 辉光（非预乘）
+  let glLost = false;
+  const loseGL = () => {
+    if (glLost) return;
+    glLost = true;
+    const ext = gl.getExtension("WEBGL_lose_context");
+    if (ext) ext.loseContext();
+  };
+
+  // ---- 颜色场（异步构建；之后按生成区域采样）----
+  let field: ColorField | null = null;
+  void buildColorField(root, w, h).then((f) => {
+    field = f;
+  });
+  const sampleThemeColor = (x: number, y: number): [number, number, number] => {
+    if (!field) return [235, 240, 255]; // 兜底亮白
+    let fx = Math.round((x / w) * field.fw);
+    if (fx < 0) fx = 0;
+    else if (fx >= field.fw) fx = field.fw - 1;
+    let fy = Math.round((y / h) * field.fh);
+    if (fy < 0) fy = 0;
+    else if (fy >= field.fh) fy = field.fh - 1;
+    const idx = (fy * field.fw + fx) * 4;
+    return toGlowColor(field.data[idx], field.data[idx + 1], field.data[idx + 2]);
+  };
+
+  // ---- 涡旋几何参数 ----
+  const cx = w / 2;                 // 圆心 x（便签整体居中位置）
+  const cy = h / 2;                 // 圆心 y
+  const maxR = Math.hypot(w, h) / 2; // 最大半径：覆盖整幅（含四角）
+  const omega = (Math.PI * 2 * 2) / (duration / 1000); // 粒子绕心角速度：全程约 2 圈（rad/s，顺时针）
+
+  // ---- 粒子池（SoA）：所有粒子分布在已粒子化圆盘内（半径 0~curR 面积均匀 → 实心圆盘），
+  // 每颗粒子锁定自己的截面半径绕心旋转、消散后在圆盘内他处重生——圆盘随扩张前缘长大，
+  // 不会全堆中心，也不会全跑外缘。----
+  const N = Math.round(8000 + density * 38000);
+  const maxP = Math.max(N + 64, 256);
+  const pth = new Float32Array(maxP);    // 初始圆周角 θ₀（绕心旋转）
+  const prad = new Float32Array(maxP);   // 出生截面半径：锁定（0~curR 出生时）
+  const pbirth = new Float32Array(maxP); // 出生时刻（相对动画起点的 age，ms）
+  const plife = new Float32Array(maxP);  // 寿命 ms
+  const psize = new Float32Array(maxP);  // 基础像素尺寸
+  const pr = new Float32Array(maxP);
+  const pg = new Float32Array(maxP);
+  const pb = new Float32Array(maxP);
+  const glData = new Float32Array(maxP * 7);
+
+  // 在已粒子化圆盘内重生一粒：随机截面半径（面积均匀）/角度/主题色，赋予随机寿命
+  const respawn = (i: number, atAge: number, curR: number): void => {
+    pbirth[i] = atAge;
+    pth[i] = Math.random() * Math.PI * 2;
+    plife[i] = 1000 + Math.random() * 700;
+    psize[i] = 2.0;
+    prad[i] = curR * Math.sqrt(Math.random()); // 圆盘面积均匀 → 实心圆盘
+    const bx = cx + prad[i] * Math.cos(pth[i]);
+    const by = cy + prad[i] * Math.sin(pth[i]);
+    const [r, g, b] = sampleThemeColor(bx, by);
+    pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
+  };
+  const initCurR = maxR * 0.05; // 起始即有一个微小圆盘（中心“点”起爆）
+  for (let i = 0; i < N; i++) {
+    respawn(i, Math.random() * 240, initCurR);
+  }
+
+  // ---- 帧循环控制 ----
+  let rafId = 0;
+  let backupId = 0;
+  let start = 0;
+  let started = false;
+  let endedLocal = false;
+  let watchdog = 0;
+
+  const stopLoop = () => {
+    endedLocal = true;
+    cancelAnimationFrame(rafId);
+    if (backupId) {
+      window.clearInterval(backupId);
+      backupId = 0;
+    }
+    if (watchdog) {
+      window.clearTimeout(watchdog);
+      watchdog = 0;
+    }
+    loseGL();
+  };
+
+  function finishEarly(): void {
+    stopLoop();
+    blankRoot(root);
+    onDone();
+  }
+
+  const cleanupAfterHide = () => {
+    stopLoop();
+    try {
+      canvas.remove();
+    } catch {
+      /* ignore */
+    }
+    if (myGen !== vortexGen) return;
+    blankRoot(root); // 保持“空画面”供下次呼出
+    vortexActive = false;
+  };
+
+  const frame = (now: number) => {
+    if (endedLocal) return;
+    if (!started) {
+      started = true;
+      start = now;
+    }
+    const age = now - start;
+    // 粒子化前缘：圆心半径由 0 平滑扩张至 maxR（ease-out 二次曲线：先快后慢）
+    const p = Math.min(1, age / duration);
+    const curR = maxR * (p * (2 - p));
+
+    // ---- 便签本体：保持静止。靠 mask 把“已被粒子化的圆形区域”真正擦成透明（消失），
+    // 而非整体变透明；仅后半段（后 50% 动画时间）再让剩余便签轻微透明（100% → 65%）。----
+    const fadeStart = duration * 0.5;
+    if (age > fadeStart) {
+      const p2 = Math.min(1, (age - fadeStart) / (duration - fadeStart));
+      root.style.opacity = (1 - 0.35 * p2).toFixed(3); // 1.0 → 0.65
+    }
+    if (curR >= maxR) {
+      // 粒子化已覆盖整幅 → 便签整体消失
+      root.style.webkitMaskImage = "linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,0))";
+      root.style.maskImage = "linear-gradient(to right, rgba(0,0,0,0), rgba(0,0,0,0))";
+    } else {
+      // mask：圆内透明（隐藏=已粒子化擦除）、圆外 #000（显示），前缘羽化
+      const feather = 6;
+      const inner = Math.max(0, curR - feather);
+      const maskCss =
+        `radial-gradient(circle at ${cx}px ${cy}px, rgba(0,0,0,0) 0%, rgba(0,0,0,0) ${inner}px,` +
+        ` #000 ${curR}px, #000 100%)`;
+      root.style.webkitMaskImage = maskCss;
+      root.style.maskImage = maskCss;
+    }
+
+    // ---- 粒子：已粒子化圆盘内绕心顺时针旋转、消散、重生；圆盘随前缘扩张而完整 ----
+    gl.clearColor(0, 0, 0, 0);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    const globalFade = age > duration - 300 ? Math.max(0, (duration - age) / 300) : 1; // 末段整体淡出
+    let drawCount = 0;
+    for (let i = 0; i < N; i++) {
+      let a = age - pbirth[i];
+      if (a < 0) continue;            // 尚未出生
+      if (a >= plife[i]) {            // 寿命到 → 在已粒子化圆盘内他处重生（不息）
+        respawn(i, age, curR);
+        a = 0;
+      }
+      const theta = pth[i] + omega * (age / 1000); // 绕心顺时针旋转（刚体圆盘）
+      const r = prad[i];                           // 锁定截面半径（不扩张、不内缩）
+      const sx = cx + r * Math.cos(theta);         // 屏幕 x
+      const sy = cy + r * Math.sin(theta);         // 屏幕 y
+      const fadeIn = Math.min(1, a / 150);         // 出生淡入
+      const u = a / plife[i];
+      const lifeFade = u > 0.7 ? Math.max(0, (1 - u) / 0.3) : 1; // 末段消散
+      const alpha = fadeIn * lifeFade * globalFade;
+      if (alpha < 0.02) continue;
+      const haloR = psize[i] * (0.6 + 0.4 * fadeIn);
+      const o = drawCount * 7;
+      glData[o] = sx * dpr;
+      glData[o + 1] = sy * dpr;
+      glData[o + 2] = haloR * 2 * dpr;
+      glData[o + 3] = alpha;
+      glData[o + 4] = pr[i];
+      glData[o + 5] = pg[i];
+      glData[o + 6] = pb[i];
+      drawCount++;
+    }
+    if (drawCount > 0) {
+      gl.bindBuffer(gl.ARRAY_BUFFER, glBuf);
+      gl.bufferData(gl.ARRAY_BUFFER, glData.subarray(0, drawCount * 7), gl.DYNAMIC_DRAW);
+      gl.enableVertexAttribArray(aPosLoc);
+      gl.vertexAttribPointer(aPosLoc, 2, gl.FLOAT, false, 28, 0);
+      gl.enableVertexAttribArray(aParamLoc);
+      gl.vertexAttribPointer(aParamLoc, 2, gl.FLOAT, false, 28, 8);
+      gl.enableVertexAttribArray(aColorLoc);
+      gl.vertexAttribPointer(aColorLoc, 3, gl.FLOAT, false, 28, 16);
+      gl.drawArrays(gl.POINTS, 0, drawCount);
+    }
+
+    if (age >= duration) {
+      gl.clearColor(0, 0, 0, 0);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      stopLoop();
+      try {
+        onDone(); // 触发真正隐藏窗口
+      } finally {
+        window.setTimeout(cleanupAfterHide, 400);
+      }
+    }
+  };
+
+  const step = (now: number) => {
+    frame(now);
+    if (!endedLocal) rafId = requestAnimationFrame(step);
+  };
+
+  const beginLoop = (): void => {
+    if (endedLocal) return;
+    // 便签本体保持静止，仅由粒子层作旋转圆盘；直接开帧即可
+    rafId = requestAnimationFrame(step);
+  };
+
+  beginLoop();
+  return () => {
+    if (endedLocal) return;
+    endedLocal = true;
+    stopLoop();
+    restoreRoot(root);
+    document.querySelector(".glow-particles-canvas")?.remove();
+  };
+}

@@ -24,6 +24,7 @@ import { requestFlameDissolveClose, playFlameMaterialize, cancelFlame } from "./
 import { requestGlowDissolveClose, cancelGlowParticles, bumpGlowGen } from "./glow-particles";
 import { requestInhaleDissolveClose, playInhaleMaterialize, cancelInhaleParticles } from "./glow-particles-inhale";
 import { requestCylinderDissolveClose, cancelCylinderParticles, bumpCylinderGen } from "./glow-particles-cylinder";
+import { requestVortexDissolveClose, cancelVortexParticles, bumpVortexGen } from "./glow-particles-vortex";
 import { MAX_BLUR_PX, applyGlassBlur, parseColorToRgbInt } from "./glass";
 import { applyPanelBackground } from "./panel-bg";
 import {
@@ -854,6 +855,23 @@ export function mountNoteApp(noteId: string, preset = "") {
       /* ignore */
     }
   };
+
+  // 「涡旋消散」模式同样无呼出动画：作废上一轮关闭动画遗留的延时清理并复位 mask/透明度。
+  const restoreVortexSummoned = (): void => {
+    bumpVortexGen();
+    try {
+      noteWindow.style.clipPath = "";
+      noteWindow.style.setProperty("-webkit-mask-image", "");
+      noteWindow.style.setProperty("mask-image", "");
+      noteWindow.style.opacity = "";
+      noteWindow.style.boxShadow = "";
+      noteWindow.style.transform = "";
+      noteWindow.style.backfaceVisibility = "";
+      noteWindow.style.transition = "";
+    } catch {
+      /* ignore */
+    }
+  };
   appWindow.listen("summoned", () => {
     if (collapsed) expandFromEdge(false);
     // 呼出打断进行中的关闭动画：先取消关闭（取消会复原页面、且不会触发 finish/隐藏），
@@ -864,6 +882,7 @@ export function mountNoteApp(noteId: string, preset = "") {
         cancelFlame();
         cancelGlowParticles();
         cancelCylinderParticles();
+        cancelVortexParticles();
         // 关闭动画已被打断：把窗口视为"从空画面呼出"，补播呼出成形动画——
       // 否则 wasHidden 仍为 false（finish 未执行），呼出动画被吞掉、窗口空着。
       wasHidden = true;
@@ -897,6 +916,7 @@ export function mountNoteApp(noteId: string, preset = "") {
           if (s.particle_mode === "erode") playFlameMaterialize(noteWindow, intensity);
           else if (s.particle_mode === "inhale") playInhaleMaterialize(noteWindow, intensity);
           else if (s.particle_mode === "cylinder") restoreCylinderSummoned();
+          else if (s.particle_mode === "vortex") restoreVortexSummoned();
           else restoreGlowSummoned();
         })
         .catch(() => {
@@ -2116,6 +2136,7 @@ export function mountNoteApp(noteId: string, preset = "") {
       cancelFlame();
       cancelGlowParticles();
       cancelCylinderParticles();
+      cancelVortexParticles();
       noteWindow.style.clipPath = "inset(0 0 100% 0)";
     noteWindow.style.boxShadow = "none";
     wasHidden = true;
@@ -2142,6 +2163,7 @@ export function mountNoteApp(noteId: string, preset = "") {
       cancelGlowParticles(); // 取消进行中的粒子光效呼出/关闭动画
       cancelInhaleParticles(); // 取消进行中的粒子吸入呼出/关闭动画
       cancelCylinderParticles(); // 取消进行中的旋柱消散动画
+      cancelVortexParticles(); // 取消进行中的涡旋消散动画
       cancelFlame(); // 防御：清掉任何残留的火焰动画，避免叠加
     summonSeq++; // 作废进行中的呼出（其 getSettings().then 会检查 seq 后跳过）
     closing = true;
@@ -2184,6 +2206,7 @@ export function mountNoteApp(noteId: string, preset = "") {
         if (s.particle_mode === "erode") requestFlameDissolveClose(finish, intensity);
         else if (s.particle_mode === "inhale") requestInhaleDissolveClose(finish, intensity);
         else if (s.particle_mode === "cylinder") requestCylinderDissolveClose(finish, intensity);
+        else if (s.particle_mode === "vortex") requestVortexDissolveClose(finish, intensity);
         else requestGlowDissolveClose(finish, intensity);
       })
       .catch(() => {
