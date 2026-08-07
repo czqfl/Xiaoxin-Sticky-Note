@@ -383,29 +383,32 @@ export async function openSettingsModal(): Promise<void> {
   const initial: Settings = (cached as Settings | null) ?? defaultSettings();
   let dirty = false;
 
-  function paint(s: Settings) {
-  const draft: Settings = JSON.parse(JSON.stringify(s));
-
-  // 独立“设置”窗口：把当前主题套用到 documentElement，让面板使用用户实际的主题色。
-  // 否则独立窗口没有 .note-window，主题 CSS 变量（--bg 等）取不到，整页会一片白。
-  {
-    const theme = draft.theme || "light";
+  // 把当前主题映射到 documentElement 的 CSS 主题类：透明主题与便签保持一致用
+  // theme-dark（深色背景变量 + 浅色文字）；theme-transparent 在 styles.css 未定义任何
+  // 变量，会回退到浅色（白底），正是“透明主题下设置面板一片白”的根因。
+  // 切换主题（themeSel change）与初次 paint 都必须调用，否则独立设置窗口缺深色类。
+  const THEME_ROOT_CLASSES = [
+    "theme-dark", "theme-dracula", "theme-nord", "theme-gruvbox",
+    "theme-onedark", "theme-catppuccin", "theme-tokyonight",
+    "theme-solarized-light", "theme-ayu", "theme-sakura", "theme-everforest",
+    "theme-transparent",
+  ];
+  function syncRootTheme(theme: string) {
     const root = document.documentElement;
-    root.classList.remove(
-      "theme-dark", "theme-dracula", "theme-nord", "theme-gruvbox",
-      "theme-onedark", "theme-catppuccin", "theme-tokyonight",
-      "theme-solarized-light", "theme-ayu", "theme-sakura", "theme-everforest",
-      "theme-transparent"
-    );
-    // 透明主题与便签保持一致：使用 theme-dark（深色背景变量 + 浅色文字），
-    // 得到与便签同款的「深色磨砂卡片 + 浅色文字」观感；不再用无配色的 theme-transparent
-    // （该词在 styles.css 中未定义任何变量，会导致面板回退到浅色主题，与便签风格相反）。
+    root.classList.remove(...THEME_ROOT_CLASSES);
     if (theme === "dark" || theme === "transparent") {
       root.classList.add("theme-dark");
     } else if (theme !== "light") {
       root.classList.add("theme-" + theme);
     }
   }
+
+  function paint(s: Settings) {
+  const draft: Settings = JSON.parse(JSON.stringify(s));
+
+  // 独立“设置”窗口：把当前主题套用到 documentElement，让面板使用用户实际的主题色。
+  // 否则独立窗口没有 .note-window，主题 CSS 变量（--bg 等）取不到，整页会一片白。
+  syncRootTheme(draft.theme || "light");
 
   try {
     overlay.innerHTML = `
@@ -928,6 +931,9 @@ export async function openSettingsModal(): Promise<void> {
     }
   }
   themeSel.addEventListener("change", () => {
+    // 切换主题时同步 documentElement 主题类：尤其切到 transparent 必须补 theme-dark，
+    // 否则独立设置窗口缺深色变量 → 面板白底看不清（paint 之外的切换路径也会触发）。
+    syncRootTheme(themeSel.value);
     updateThemePreview(themeSel.value);
     applyTransparentPreview(themeSel.value === "transparent");
     applyGlassLive(normalizeGlassPct(draft.glass_blur));
