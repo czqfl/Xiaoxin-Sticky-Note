@@ -46,7 +46,8 @@
         "height": 1080,
         "x": 0,
         "y": 0,
-        "center": false
+        "center": false,
+        "backgroundThrottling": false
       }
     ]
   },

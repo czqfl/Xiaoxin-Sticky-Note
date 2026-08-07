@@ -258,7 +258,9 @@ function initCylinder(p: ParticleLayerStart): void {
   R = rectW * 0.46;
   focal = R * 2.6;
   omega = (Math.PI * 2 * 2) / (duration / 1000);
-  const N = Math.round(5000 + layerDensity * 22000);
+  // layerDensity 是 0~100，粒子数计算必须先归一化（×/100），否则粒子数爆到百万级卡死
+  const d = layerDensity / 100;
+  const N = Math.round(5000 + d * 22000);
   ensurePool(N + 64);
   for (let i = 0; i < N; i++) {
     respawnCylinder(i, 0); // 第一帧全部出生（fadeIn 统一淡入），避免逐个冒粒子
@@ -278,7 +280,9 @@ function initVortex(p: ParticleLayerStart): void {
   cy = originY + rectH / 2;
   maxR = Math.hypot(rectW, rectH) / 2;
   omega = (Math.PI * 2 * 2) / (duration / 1000);
-  const N = Math.round(4000 + layerDensity * 18000);
+  // layerDensity 是 0~100，粒子数计算必须先归一化（×/100），否则粒子数爆到百万级卡死
+  const d = layerDensity / 100;
+  const N = Math.round(4000 + d * 18000);
   ensurePool(N + 64);
   for (let i = 0; i < N; i++) {
     respawnVortex(i, 0); // 第一帧全部出生（fadeIn 统一淡入）
