@@ -1,5 +1,5 @@
 // 便签「粒子光效消散」动画（恢复版）：界面从随机几处开始碎裂成发光微粒，
-// 区域化朝相近方向加速上升、边升边淡出，全程带光晕辉光。粒子在便签窗口内渲染。
+// 区域化朝相近方向加速上升、边升边淡出，全程带光晕辉光。
 // ----------------------------------------------------------------------------
 // 触发：关闭窗口时播放（粒子风格 particle_mode = "particle" 时选用）。
 // 呼出时不播放动画：直接复原便签显示（见 note.ts summoned 处理）。
@@ -13,8 +13,9 @@
 //   （等效距离 上×0.4 / 左右×1.0 / 下×1.8）；幂函数蔓延（先慢后快）；
 //   花瓣状角度调制 → 扩散形状不规则（非圆形）；取 min 叠加 → 各区域前沿先后推进。
 // - 动画后 50%：便签整体透明度 100% → 50% 淡出（不必等 mask 铺满全窗）。
-// - **等加速上升**：所有粒子初速度相同、加速度相同（speed = v0 + a·t），
-//   随机左右偏转 ±55°，可飘向窗口边缘；粒子寿命 1300~1800ms。
+// - **粒子自由飘散、无矩形边界约束**：等加速上升（speed = v0 + a·t）+ 随机左右偏转 ±55°
+//   + 横向恒定向漂移 ±30px/s + 水平轻摆 ±40px/s；粒子越过便签原本的矩形边界后继续
+//   向外飘散，**不因越界而销毁/受限**，仅按自身寿命（1800~3400ms）末段透明度衰减自然淡出。
 // - 颜色（动态主题采样）：构建便签"区域颜色场"（--bg 底色 + has-bg 背景图 cover 为主导，
 //   底色仅轻量调和），按粒子**生成区域**采样对应背景颜色（背景是什么颜色粒子就是什么颜色），
 //   additive 叠加出辉光，边升边变淡直至自然消散。
@@ -616,7 +617,9 @@ function runGlow(
   // 在 (x,y) 生成一粒发光微粒；颜色采样自该生成区域的主题色。
   const spawn = (x: number, y: number, age: number): void => {
     if (pcount >= maxP) return;
-    let life = Math.round((1300 + Math.random() * 500) * k); // 1300~1800ms（随速度缩放）
+    // 寿命加长（1800~3400ms，随速度缩放）：粒子有充足时间飘出便签矩形边界，
+    // 越过原始区域向外扩散，靠自身寿命/透明度衰减自然消散（无矩形边界销毁约束）
+    let life = Math.round((1800 + Math.random() * 1600) * k);
     const fit = duration - age - 40;
     if (fit < 120) return;
     if (life > fit) life = fit;
@@ -624,13 +627,13 @@ function runGlow(
     px[i] = x;
     py[i] = y;
     pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // 随机左右偏转 ±55°
-    pv0[i] = 30; // 初速度相同（px/s，缓慢起飘）
+    pv0[i] = 20 + Math.random() * 40; // 初速度略随机（px/s，缓慢起飘，节奏更自然）
     pv1[i] = 650; // 加速度相同（px/s²，明显加速）
     plife[i] = life;
     page[i] = 0;
     psize[i] = 1.8; // 亮核 1.8px
     pseed[i] = Math.random() * Math.PI * 2;
-    psway[i] = (Math.random() - 0.5) * 20; // ±10 px/s 恒定向漂移
+    psway[i] = (Math.random() - 0.5) * 60; // ±30 px/s 恒定向漂移（横向更自由）
     const [r, g, b] = sampleThemeColor(x, y);
     pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
   };
@@ -737,11 +740,13 @@ function runGlow(
         i--;
         continue;
       }
-      // 等加速上升：speed = v0 + a·t（初速度/加速度全部粒子一致）
+      // 等加速上升 + 轻柔水平摆动：粒子越过便签矩形边界后继续自由飘散，
+      // 无边界销毁约束，仅靠寿命末段透明度衰减自然淡出
       const speed = pv0[i] + pv1[i] * (a / 1000);
       const dx = Math.sin(pang[i]);
       const dy = -Math.cos(pang[i]); // 向上为负 y
-      px[i] += (dx * speed + psway[i]) * dt;
+      const sway = Math.sin(a * 0.004 + pseed[i]) * 40; // 水平轻摆 ±40px/s（轨迹灵动）
+      px[i] += (dx * speed + psway[i] + sway) * dt;
       py[i] += dy * speed * dt;
       const t = 1 - u;
       const alpha = t * Math.pow(t, 0.2) * globalFade;
