@@ -2016,7 +2016,9 @@ async fn open_settings_window(app: AppHandle) -> Result<(), String> {
     let _win = WebviewWindowBuilder::new(&app, LABEL, WebviewUrl::App("settings.html".into()))
         .title("便签设置")
         .decorations(false)
-        .transparent(false) // 不透明实窗：彻底杜绝透明窗口首帧白板/透明闪烁
+        .transparent(true) // 透明窗：与便签同款 —— 透明主题下靠 DWM 原生 Acrylic 做实时磨砂，
+                           // 不透明则底色由 .settings-standalone .settings-modal 实色垫底，观感一致。
+                           // 首帧白/闪烁已由前端 paint 后再 show 规避（见下方注释），无需靠不透明兜底。
         .resizable(true)
         .always_on_top(true)
         .inner_size(800.0, 600.0)
