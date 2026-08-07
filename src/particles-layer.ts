@@ -112,6 +112,8 @@ const ensurePool = (n: number): void => {
 };
 
 const sampleColor = (lx: number, ly: number): [number, number, number] => {
+  // 颜色场缺失/越界时兜底亮白，避免 NaN 渲染成未定义颜色（表现为颜色"固定/异常"）
+  if (!fieldData || fieldData.length < 4) return [235, 240, 255];
   let fx = Math.round((lx / rectW) * fieldW);
   if (fx < 0) fx = 0;
   else if (fx >= fieldW) fx = fieldW - 1;
@@ -119,8 +121,10 @@ const sampleColor = (lx: number, ly: number): [number, number, number] => {
   if (fy < 0) fy = 0;
   else if (fy >= fieldH) fy = fieldH - 1;
   const idx = (fy * fieldW + fx) * 4;
+  if (idx + 2 >= fieldData.length) return [235, 240, 255];
   const r = fieldData[idx], g = fieldData[idx + 1], b = fieldData[idx + 2];
   const max = Math.max(r, g, b);
+  if (!isFinite(max)) return [235, 240, 255];
   if (max >= 158) return [r, g, b];
   const f = 158 / Math.max(1, max);
   return [Math.min(255, r * f), Math.min(255, g * f), Math.min(255, b * f)];
@@ -171,14 +175,14 @@ const respawnCylinder = (i: number, atAge: number): void => {
 };
 
 // ---- vortex：中心点圆形扩张 + 圆盘内粒子绕心旋转吸入 ----
+// 注意：粒子颜色**不在此设置**——由 frame 每帧按粒子当前位置采样背景色决定（颜色绑定空间位置，
+// 随旋转移动实时变化），这里只设运动参数，避免初始颜色残留导致"颜色固定不变"。
 const respawnVortex = (i: number, atAge: number): void => {
   pbirth[i] = atAge;
   pth[i] = Math.random() * Math.PI * 2;
   plife[i] = Math.round((900 + Math.random() * 600) * k);
   psize[i] = 2.0;
   prad[i] = Math.sqrt(Math.random()); // 铺满整个圆盘（中心也有粒子）
-  const [r, g, b] = sampleColor(Math.random() * rectW, Math.random() * rectH);
-  pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
 };
 
 function stopLayer(): void {
