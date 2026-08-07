@@ -150,6 +150,7 @@ export function requestCylinderDissolveClose(
         }
       }
       if (aborted) return;
+      const animStartAt = performance.now(); // 动画开始时刻（粒子层用同一基准计算 age，严格同步）
       stopRun = runCylinder(root, particleDensity, speed, () => {
         window.clearTimeout(watchdog);
         safeDone();
@@ -168,6 +169,7 @@ export function requestCylinderDissolveClose(
           fieldData: field ? Array.from(field.data) : [],
           density: particleDensity,
           speed,
+          startAt: animStartAt,
         }).catch(() => {});
       }
     } catch (e) {

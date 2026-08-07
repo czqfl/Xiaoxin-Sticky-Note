@@ -31,6 +31,8 @@ interface ParticleLayerStart {
   density: number;
   /** 动画速度百分比（100=原速） */
   speed: number;
+  /** 便签动画开始时刻（performance.now() 时间戳）：粒子层用同一基准计算 age，保证与便签 mask 同步 */
+  startAt?: number;
 }
 
 let canvas: HTMLCanvasElement | null = null;
@@ -42,7 +44,7 @@ let layerEnded = false;
 let dpr = 1;
 let duration = 2400;
 let k = 1;
-let start = 0;
+let layerStartAt = 0;
 let started = false;
 let lastPaint = 0;
 let layerKind: LayerKind = "particle";
@@ -295,12 +297,13 @@ const frame = (now: number): void => {
   if (layerEnded) return;
   if (!started) {
     started = true;
-    start = now;
     lastPaint = now;
   }
   const dt = Math.min(0.05, Math.max(0.001, (now - lastPaint) / 1000));
   lastPaint = now;
-  const age = now - start;
+  // 动画 age 用便签动画开始时刻（startAt）为基准：粒子层与便签 mask 严格同步，
+  // 不受粒子层收到事件/窗口显示的延迟影响（否则粒子化总比便签消散慢）
+  const age = now - layerStartAt;
   const globalFade = age > duration - 200 ? Math.max(0, (duration - age) / 200) : 1;
 
   if (!gl) return;
@@ -453,6 +456,7 @@ const step = (now: number): void => {
 
 function startLayer(p: ParticleLayerStart): void {
   layerKind = p.type || "particle";
+  layerStartAt = p.startAt ?? performance.now();
   layerDensity = Math.max(0, Math.min(100, p.density ?? 50));
   k = Math.max(0.25, Math.min(4, 100 / Math.max(10, p.speed ?? 100)));
   if (layerKind === "particle") {

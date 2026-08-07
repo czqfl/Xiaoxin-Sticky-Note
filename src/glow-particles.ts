@@ -159,6 +159,7 @@ export function requestGlowDissolveClose(
         }
       }
       if (aborted) return;
+      const animStartAt = performance.now(); // 动画开始时刻（粒子层用同一基准计算 age，严格同步）
       stopRun = runGlow(root, particleDensity, speed, () => {
         window.clearTimeout(watchdog);
         safeDone();
@@ -181,6 +182,7 @@ export function requestGlowDissolveClose(
           tField: tfield?.data ?? [],
           density: particleDensity,
           speed,
+          startAt: animStartAt,
         }).catch(() => {});
       }
     } catch (e) {
