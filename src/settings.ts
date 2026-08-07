@@ -1310,7 +1310,7 @@ export async function openSettingsModal(): Promise<void> {
       syncRootTheme(draft.theme);
       updateThemePreview(draft.theme);
       if (standalone) void applyStandaloneBg();
-      showToast("已应用 · 配置更新到最新");
+      showToast("当前设置已应用");
       const saveBtn = overlay.querySelector("#set-save") as HTMLButtonElement | null;
       if (saveBtn) {
         saveBtn.classList.add("applied");
