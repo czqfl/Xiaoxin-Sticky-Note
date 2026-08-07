@@ -469,11 +469,12 @@ function runCylinder(
     }
     const age = now - start;
 
-    // ---- 便签本体：保持静止，仅随消散淡出（不旋转！旋转的是粒子圆柱）----
-    const fadeStart = duration * 0.35;
+    // ---- 便签本体：保持静止、不旋转。前半段完全不透明——靠粒子圆柱“粒子化”周边，而非整体变透明；
+    // 仅后半段（后 50% 动画时间）让便签轻微透明（100% → 65%），到结尾窗口即关闭，不归零。----
+    const fadeStart = duration * 0.5;
     if (age > fadeStart) {
       const p = Math.min(1, (age - fadeStart) / (duration - fadeStart));
-      root.style.opacity = (1 - p).toFixed(3);
+      root.style.opacity = (1 - 0.35 * p).toFixed(3); // 1.0 → 0.65
     }
 
     // ---- 粒子：从中心竖线持续往外冒 → 加入不断扩张的圆柱壳 → 绕轴旋转 → 持续消散 ----
