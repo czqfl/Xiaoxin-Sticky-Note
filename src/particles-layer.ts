@@ -432,18 +432,18 @@ const frame = (now: number): void => {
         + Math.sin(a * 0.012 + pseed[i]) * 0.03;
       const t = a / plife[i];
       const shrink = t * t;
-      // 毛尖（方向性尖刺）：圆周均匀分布 S 个尖刺，形状统一（三角尖角），
-      // 凸起朝旋转反方向倾斜（顺时针旋 → 毛尖朝逆时针甩出）
-      const S = 16;
+      // 毛边（细密方向性毛尖）：圆周均匀分布 S 个细小毛尖，形状统一（细三角尖角），
+      // 轻微凸起且朝旋转反方向倾斜（顺时针旋 → 毛尖朝逆时针轻甩）——只修饰边缘，不突兀
+      const S = 48;
       const spikePeriod = (Math.PI * 2) / S;
-      const spikeHalf = spikePeriod * 0.42;
+      const spikeHalf = spikePeriod * 0.3;
       let dSpike = theta % spikePeriod;
       if (dSpike > spikePeriod / 2) dSpike -= spikePeriod;
-      const spikeShape = Math.max(0, 1 - Math.abs(dSpike) / spikeHalf); // 统一三角尖角
-      const spikeR = 0.14 * spikeShape; // 毛尖径向凸起高度
-      const tilt = 0.14 * spikeShape;   // 反旋转方向倾斜量（omega 正=顺时针，θ 减=逆时针）
-      const r = curR * (1 + spikeR) * prad[i] * (1 - 0.92 * shrink); // 跟随扩张/收拢 + 毛尖 + 吸入
-      const theta2 = theta - tilt;      // 尖刺顶点朝反方向甩出
+      const spikeShape = Math.max(0, 1 - Math.abs(dSpike) / spikeHalf); // 统一细三角尖角
+      const spikeR = 0.05 * spikeShape; // 毛尖径向凸起（轻微）
+      const tilt = 0.06 * spikeShape;   // 反旋转方向倾斜（轻微）
+      const r = curR * (1 + spikeR) * prad[i] * (1 - 0.92 * shrink); // 跟随扩张/收拢 + 毛边 + 吸入
+      const theta2 = theta - tilt;      // 尖刺顶点朝反方向轻甩
       const sx = cx + r * Math.cos(theta2) + Math.sin(a * 0.004 + pseed[i]) * 5;
       const sy = cy + r * Math.sin(theta2) + Math.cos(a * 0.005 + pseed[i] * 1.7) * 5;
       const fadeIn = Math.min(1, a / 150);
