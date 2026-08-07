@@ -393,7 +393,8 @@ function runCylinder(
   const omega = (Math.PI * 2 * 2) / (duration / 1000); // 绕轴角速度：全程约 2 圈（rad/s）
 
   // ---- 粒子池（SoA）：粒子从中心轴持续往外冒、持续消散（死亡即原地重生，形成不息的喷泉）----
-  const N = Math.round(6400 + density * 43000);
+  // 旋柱相对其他模式略弱：density 系数 43000→32000（仅本模式，其他模式不动）
+  const N = Math.round(6400 + density * 32000);
   const maxP = Math.max(N + 64, 256);
   const pth = new Float32Array(maxP);    // 当前圆周角 θ
   const pyAx = new Float32Array(maxP);   // 轴向位置（屏幕 y，0~h）
@@ -518,8 +519,9 @@ function runCylinder(
       const fadeIn = Math.min(1, a / 160);         // 从轴冒出时淡入
       const u = a / plife[i];
       const lifeFade = u > 0.7 ? Math.max(0, (1 - u) / 0.3) : 1; // 末段消散
-      const radial = r / (w * 0.04);               // 距轴比例（轴→4% 半宽）
-      const coreDim = Math.min(1, radial);         // 轴心完全不可见、离轴渐亮：根除中心亮实心柱
+      // 圆柱本就是中空回转体：轴心附近一段半径内完全不可见、向外渐亮。这才能根除
+      // “结尾中心冒出小圆柱”——末尾残存的都是刚出生的小半径粒子，正好落在不可见区内。
+      const coreDim = Math.min(1, Math.max(0, (r - w * 0.07) / (w * 0.06)));
       const alpha = fadeIn * lifeFade * globalFade * coreDim;
       if (alpha < 0.02) continue;
       const haloR = psize[i] * s * (0.6 + 0.4 * fadeIn);
