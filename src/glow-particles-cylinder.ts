@@ -132,46 +132,43 @@ export function requestCylinderDissolveClose(
     }
     if (aborted) return;
     try {
-      // remote：先构建颜色场（粒子层与便签 mask 同步开始，避免开头只有 mask 无粒子）
+      // remote：提前并行获取颜色场与窗口位置（emit 不再 await，粒子层与 mask 几乎同步开始）
       let layerField: ColorField | null = null;
+      let layerOrigin = { x: 0, y: 0 };
       if (useRemote && !aborted) {
-        layerField = await buildColorField(root, window.innerWidth, window.innerHeight);
+        const w = window.innerWidth;
+        const h = window.innerHeight;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
+        const [field, pos] = await Promise.all([
+          buildColorField(root, w, h),
+          getCurrentWindow().outerPosition().catch(() => null),
+        ]);
+        layerField = field;
+        if (pos) {
+          layerOrigin.x = pos.x / dpr;
+          layerOrigin.y = pos.y / dpr;
+        }
       }
       if (aborted) return;
       stopRun = runCylinder(root, particleDensity, speed, () => {
         window.clearTimeout(watchdog);
         safeDone();
       }, useRemote ? "remote" : "self");
+      // remote：立即发 start（颜色场/位置已就绪），粒子层与 mask 同步开始
       if (useRemote && !aborted) {
-        const w = window.innerWidth;
-        const h = window.innerHeight;
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        try {
-          const field = layerField;
-          let originX = 0;
-          let originY = 0;
-          try {
-            const pos = await getCurrentWindow().outerPosition();
-            originX = pos.x / dpr;
-            originY = pos.y / dpr;
-          } catch {
-            /* 取不到位置则按屏幕原点 */
-          }
-          emit("particles-start", {
-            type: "cylinder",
-            originX,
-            originY,
-            width: w,
-            height: h,
-            fieldW: field?.fw ?? 8,
-            fieldH: field?.fh ?? 8,
-            fieldData: field ? Array.from(field.data) : [],
-            density: particleDensity,
-            speed,
-          }).catch(() => {});
-        } catch {
-          /* 颜色场构建失败：粒子层按兜底亮白渲染 */
-        }
+        const field = layerField;
+        emit("particles-start", {
+          type: "cylinder",
+          originX: layerOrigin.x,
+          originY: layerOrigin.y,
+          width: window.innerWidth,
+          height: window.innerHeight,
+          fieldW: field?.fw ?? 8,
+          fieldH: field?.fh ?? 8,
+          fieldData: field ? Array.from(field.data) : [],
+          density: particleDensity,
+          speed,
+        }).catch(() => {});
       }
     } catch (e) {
       console.error("旋柱消散动画异常:", e);
@@ -519,7 +516,7 @@ function runCylinder(
       pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
     };
     for (let i = 0; i < N; i++) {
-      respawn(i, Math.random() * 260); // 开头 0~260ms 内陆续出生，圆柱即刻成型（不是慢慢长大）
+      respawn(i, Math.random() * 100); // 前 100ms 内快速铺满，圆柱即刻成型（不是慢慢长大）
     }
   }
 

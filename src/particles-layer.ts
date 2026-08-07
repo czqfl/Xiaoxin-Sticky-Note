@@ -257,10 +257,10 @@ function initCylinder(p: ParticleLayerStart): void {
   R = rectW * 0.46;
   focal = R * 2.6;
   omega = (Math.PI * 2 * 2) / (duration / 1000);
-  const N = Math.round(6400 + layerDensity * 32000);
+  const N = Math.round(5000 + layerDensity * 22000);
   ensurePool(N + 64);
   for (let i = 0; i < N; i++) {
-    respawnCylinder(i, Math.random() * 260);
+    respawnCylinder(i, Math.random() * 100); // 前 100ms 内快速铺满，避免逐帧冒粒子
   }
   pcount = N;
 }
@@ -280,7 +280,7 @@ function initVortex(p: ParticleLayerStart): void {
   const N = Math.round(4000 + layerDensity * 18000);
   ensurePool(N + 64);
   for (let i = 0; i < N; i++) {
-    respawnVortex(i, Math.random() * 240);
+    respawnVortex(i, Math.random() * 100); // 前 100ms 内快速铺满，避免逐帧冒粒子
   }
   pcount = N;
 }
