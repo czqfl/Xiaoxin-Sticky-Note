@@ -622,11 +622,12 @@ function runVortex(
           + Math.sin(a * 0.012 + pseed[i]) * 0.03;
         const t = a / plife[i];                      // 寿命进度 0→1
         const shrink = t * t;                        // 吸入收缩（ease-in：先慢后快 → 旋涡内吸）
-        // 外缘不规则：按粒子角度叠加低频多频扰动，打破完美圆形（边缘有机扰动）
+        // 外缘锯齿状：多组高频细碎锯齿（幅度小、频率高），打破完美圆且起伏不过大
         const ripplePhase = age * 0.0008;
-        const ripple = 1 + 0.12 * Math.sin(theta * 3 + ripplePhase)
-          + 0.07 * Math.sin(theta * 5 - ripplePhase * 0.7 + 1.9)
-          + 0.05 * Math.sin(theta * 7 + ripplePhase * 1.3 + 4.1);
+        const ripple = 1 + 0.03 * Math.sin(theta * 3 + ripplePhase)
+          + 0.025 * Math.sin(theta * 12 + ripplePhase * 1.7 + 1.3)
+          + 0.02 * Math.sin(theta * 20 + ripplePhase * 2.6 + 3.1)
+          + 0.015 * Math.sin(theta * 32 + ripplePhase * 3.4 + 5.2);
         const r = curR * ripple * pfrac[i] * (1 - 0.92 * shrink); // 跟随扩张/收拢 + 边缘扰动 + 吸入
         const sx = cx + r * Math.cos(theta) + Math.sin(a * 0.004 + pseed[i]) * 7; // 位置微抖动（扭曲感）
         const sy = cy + r * Math.sin(theta) + Math.cos(a * 0.005 + pseed[i] * 1.7) * 7;
