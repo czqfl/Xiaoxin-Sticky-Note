@@ -170,14 +170,14 @@ const respawnCylinder = (i: number, atAge: number): void => {
   pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
 };
 
-// ---- vortex：粒子铺满整个已粒子化圆盘（像粒子消散一样区域填充），旋转同时向中心适度回收 ----
+// ---- vortex：粒子在「粒子化前缘」（圆半径 curR 处）生成，随后旋转向中心回收（吸入旋涡）----
 const respawnVortex = (i: number, atAge: number, curR: number): void => {
   pbirth[i] = atAge;
   pth[i] = Math.random() * Math.PI * 2;
   plife[i] = Math.round((900 + Math.random() * 600) * k);
   psize[i] = 2.0;
-  // 铺满整个圆盘（面积均匀）：中间也有粒子，不会只剩前缘圆环
-  prad[i] = curR * Math.sqrt(Math.random());
+  // 出生在前缘附近（0.85~1.0 × curR）：便签正在消散的位置生成粒子
+  prad[i] = curR * (0.85 + 0.15 * Math.random());
 };
 
 function stopLayer(): void {
@@ -410,12 +410,12 @@ const frame = (now: number): void => {
       }
       const theta = pth[i] + omega * (age / 1000);
       const t = a / plife[i];
-      const shrink = t; // 线性向中心回收（适度，中心略密，圆盘整体仍充满粒子）
-      const r = prad[i] * (1 - 0.55 * shrink);
+      const shrink = Math.pow(t, 0.7); // 先快后慢向中心回收（粒子尽快到达中心形成粒子圈）
+      const r = prad[i] * (1 - 0.97 * shrink); // 锁定出生半径、深回收至中心附近
       const sx = cx + r * Math.cos(theta);
       const sy = cy + r * Math.sin(theta);
       const fadeIn = Math.min(1, a / 150);
-      const lifeFade = t > 0.8 ? Math.max(0, (1 - t) / 0.2) : 1;
+      const lifeFade = t > 0.85 ? Math.max(0, (1 - t) / 0.15) : 1; // 在中心停留更久再淡出
       const alpha = fadeIn * lifeFade * globalFade;
       if (alpha < 0.02) continue;
       const col = sampleColor(sx - originX, sy - originY);
