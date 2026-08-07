@@ -379,7 +379,16 @@ export async function openSettingsModal(): Promise<void> {
     </div>`;
   document.body.appendChild(overlay);
 
-  // 同步先把面板画出来——"加载中"仅闪现一瞬间，用户立即可见全部 UI
+  // 独立设置窗口的 JS 上下文与便签窗口隔离，模块级 cached 必然为空；
+  // 若直接用 defaultSettings（theme=light）画首帧会缺 theme-dark，透明主题下白屏。
+  // 因此先加载真实设置填满 cached，保证首帧即带正确主题类（深色底 + 浅色字）。
+  if (!cached) {
+    try {
+      cached = (await loadSettings()) as Settings;
+    } catch {
+      /* 失败则退回默认，下方异步刷新仍会再试 */
+    }
+  }
   const initial: Settings = (cached as Settings | null) ?? defaultSettings();
   let dirty = false;
 

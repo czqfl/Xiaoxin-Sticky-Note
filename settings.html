@@ -8,7 +8,7 @@
     <style>
       /* 同步铺底：在任何 JS 加载/执行之前就上实色，杜绝“打开设置即白板/透明闪烁”
          —— 这是根治白屏的第一道保险；即便后续脚本出错，页面也是实色而非空白。 */
-      html, body { margin: 0; height: 100%; background: #f3efe7; }
+      html, body { margin: 0; height: 100%; background: var(--bg, #f3efe7); }
     </style>
   </head>
   <body>

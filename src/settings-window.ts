@@ -7,10 +7,12 @@
 import "./styles.css";
 import { openSettingsModal } from "./settings";
 
-// 同步铺底（在任何异步加载之前）：即便后续脚本加载/执行出错，页面也是实色而非白板。
+// 首帧兜底底色：跟随主题变量 --bg（深色/透明主题下自动变深），不再硬编码浅色——
+// 否则这条最高优先级内联样式会盖过 theme-dark 的 --bg，透明主题下面板透明时露出浅底
+// → 一片白、浅色文字看不清。var(--bg, #f3efe7) 保证变量未就绪时也有兜底色。
 const root = document.documentElement;
-root.style.background = "#f3efe7";
-if (document.body) document.body.style.background = "#f3efe7";
+root.style.background = "var(--bg, #f3efe7)";
+if (document.body) document.body.style.background = "var(--bg, #f3efe7)";
 
 // 全局错误兜底：任何未捕获异常直接显示在页面上，绝不再静默白屏。
 function showErr(msg: string): void {
