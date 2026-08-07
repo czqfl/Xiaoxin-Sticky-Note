@@ -516,7 +516,7 @@ function runCylinder(
       pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
     };
     for (let i = 0; i < N; i++) {
-      respawn(i, Math.random() * 100); // 前 100ms 内快速铺满，圆柱即刻成型（不是慢慢长大）
+      respawn(i, 0); // 第一帧全部出生（fadeIn 统一淡入），圆柱即刻成型
     }
   }
 

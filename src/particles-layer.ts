@@ -192,7 +192,8 @@ function stopLayer(): void {
   }
   pcount = 0;
   layerActive = false;
-  getCurrentWindow().hide().catch(() => {});
+  // 不 hide()：粒子层窗口常驻显示（透明空内容不可见），避免 hide/show 周期
+  // 造成下一次动画开始时窗口未就绪、rAF 不跑的时序延迟。
 }
 
 // ---- 各模式的初始化 ----
@@ -260,7 +261,7 @@ function initCylinder(p: ParticleLayerStart): void {
   const N = Math.round(5000 + layerDensity * 22000);
   ensurePool(N + 64);
   for (let i = 0; i < N; i++) {
-    respawnCylinder(i, Math.random() * 100); // 前 100ms 内快速铺满，避免逐帧冒粒子
+    respawnCylinder(i, 0); // 第一帧全部出生（fadeIn 统一淡入），避免逐个冒粒子
   }
   pcount = N;
 }
@@ -280,7 +281,7 @@ function initVortex(p: ParticleLayerStart): void {
   const N = Math.round(4000 + layerDensity * 18000);
   ensurePool(N + 64);
   for (let i = 0; i < N; i++) {
-    respawnVortex(i, Math.random() * 100); // 前 100ms 内快速铺满，避免逐帧冒粒子
+    respawnVortex(i, 0); // 第一帧全部出生（fadeIn 统一淡入）
   }
   pcount = N;
 }

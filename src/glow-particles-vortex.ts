@@ -498,7 +498,7 @@ function runVortex(
       pfrac[i] = Math.sqrt(Math.random()); // 铺满整个圆盘 → 中心也被粒子化（不空）
     };
     for (let i = 0; i < N; i++) {
-      respawn(i, Math.random() * 100); // 前 100ms 内快速铺满
+      respawn(i, 0); // 第一帧全部出生（fadeIn 统一淡入）
     }
   }
 
