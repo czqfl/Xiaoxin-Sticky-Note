@@ -573,6 +573,7 @@ export async function openSettingsModal(): Promise<void> {
         <span class="settings-msg" id="set-msg"></span>
         <button class="btn-primary" id="set-save">应用</button>
       </div>
+      <div class="settings-toast" id="set-toast" role="status" aria-live="polite"></div>
     </div>
   `;
   } catch (e) {
@@ -591,6 +592,17 @@ export async function openSettingsModal(): Promise<void> {
 
   const list = overlay.querySelector("#shortcut-list") as HTMLDivElement | null;
   const msg = overlay.querySelector("#set-msg") as HTMLSpanElement;
+  const toast = overlay.querySelector("#set-toast") as HTMLDivElement | null;
+  let toastTimer: number | undefined;
+  // 强反馈 toast：强调色卡片 + ✓，1.8s 自动淡出；isError 时转红。明显强于原弱文字提示。
+  function showToast(text: string, isError = false): void {
+    if (!toast) return;
+    toast.classList.toggle("error", isError);
+    toast.textContent = (isError ? "" : "✓ ") + text;
+    toast.classList.add("show");
+    if (toastTimer !== undefined) window.clearTimeout(toastTimer);
+    toastTimer = window.setTimeout(() => toast && toast.classList.remove("show"), 1800);
+  }
 
   if (!list) { console.error("设置面板缺少 #shortcut-list，渲染中止"); return; }
 
@@ -1294,10 +1306,21 @@ export async function openSettingsModal(): Promise<void> {
       }
       msg.textContent = "已应用";
       msg.classList.add("ok");
+      // 即时刷新面板自身视觉（主题 / 壁纸 / 玻璃 / 亚克力），无需关闭重开就能看到效果
+      syncRootTheme(draft.theme);
+      updateThemePreview(draft.theme);
+      if (standalone) void applyStandaloneBg();
+      showToast("已应用 · 配置更新到最新");
+      const saveBtn = overlay.querySelector("#set-save") as HTMLButtonElement | null;
+      if (saveBtn) {
+        saveBtn.classList.add("applied");
+        window.setTimeout(() => saveBtn.classList.remove("applied"), 1200);
+      }
       window.dispatchEvent(new CustomEvent(SETTINGS_EVENT));
     } catch (err) {
       msg.textContent = "应用失败：" + String(err);
       msg.classList.remove("ok");
+      showToast("应用失败：" + String(err), true);
     }
   });
     if (standalone) void applyStandaloneBg();
