@@ -622,15 +622,20 @@ function runVortex(
           + Math.sin(a * 0.012 + pseed[i]) * 0.03;
         const t = a / plife[i];                      // 寿命进度 0→1
         const shrink = t * t;                        // 吸入收缩（ease-in：先慢后快 → 旋涡内吸）
-        // 外缘锯齿状：多组高频细碎锯齿（幅度小、频率高），打破完美圆且起伏不过大
-        const ripplePhase = age * 0.0008;
-        const ripple = 1 + 0.03 * Math.sin(theta * 3 + ripplePhase)
-          + 0.025 * Math.sin(theta * 12 + ripplePhase * 1.7 + 1.3)
-          + 0.02 * Math.sin(theta * 20 + ripplePhase * 2.6 + 3.1)
-          + 0.015 * Math.sin(theta * 32 + ripplePhase * 3.4 + 5.2);
-        const r = curR * ripple * pfrac[i] * (1 - 0.92 * shrink); // 跟随扩张/收拢 + 边缘扰动 + 吸入
-        const sx = cx + r * Math.cos(theta) + Math.sin(a * 0.004 + pseed[i]) * 7; // 位置微抖动（扭曲感）
-        const sy = cy + r * Math.sin(theta) + Math.cos(a * 0.005 + pseed[i] * 1.7) * 7;
+        // 毛尖（方向性尖刺）：圆周均匀分布 S 个尖刺，形状统一（三角尖角），
+        // 凸起朝旋转反方向倾斜（顺时针旋 → 毛尖朝逆时针甩出）
+        const S = 16;
+        const spikePeriod = (Math.PI * 2) / S;
+        const spikeHalf = spikePeriod * 0.42;
+        let dSpike = theta % spikePeriod;
+        if (dSpike > spikePeriod / 2) dSpike -= spikePeriod;
+        const spikeShape = Math.max(0, 1 - Math.abs(dSpike) / spikeHalf); // 统一三角尖角
+        const spikeR = 0.14 * spikeShape; // 毛尖径向凸起高度
+        const tilt = 0.14 * spikeShape;   // 反旋转方向倾斜量（omega 正=顺时针，θ 减=逆时针）
+        const r = curR * (1 + spikeR) * pfrac[i] * (1 - 0.92 * shrink); // 跟随扩张/收拢 + 毛尖 + 吸入
+        const theta2 = theta - tilt;      // 尖刺顶点朝反方向甩出
+        const sx = cx + r * Math.cos(theta2) + Math.sin(a * 0.004 + pseed[i]) * 5;
+        const sy = cy + r * Math.sin(theta2) + Math.cos(a * 0.005 + pseed[i] * 1.7) * 5;
         const fadeIn = Math.min(1, a / 150);         // 出生淡入
         const lifeFade = t > 0.7 ? Math.max(0, (1 - t) / 0.3) : 1; // 末段消散
         const alpha = fadeIn * lifeFade * globalFade;
