@@ -386,7 +386,8 @@ const frame = (now: number): void => {
   } else {
     // vortex
     const p = Math.min(1, age / duration);
-    const curR = maxR * (p * (2 - p));
+    // 起始即有一个小圆盘（5% maxR），避免粒子全挤在圆心一个点 additive 叠加成刺眼白斑
+    const curR = maxR * (0.05 + 0.95 * p * (2 - p));
     for (let i = 0; i < pcount; i++) {
       let a = age - pbirth[i];
       if (a < 0) continue;

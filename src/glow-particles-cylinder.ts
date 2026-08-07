@@ -132,6 +132,12 @@ export function requestCylinderDissolveClose(
     }
     if (aborted) return;
     try {
+      // remote：先构建颜色场（粒子层与便签 mask 同步开始，避免开头只有 mask 无粒子）
+      let layerField: ColorField | null = null;
+      if (useRemote && !aborted) {
+        layerField = await buildColorField(root, window.innerWidth, window.innerHeight);
+      }
+      if (aborted) return;
       stopRun = runCylinder(root, particleDensity, speed, () => {
         window.clearTimeout(watchdog);
         safeDone();
@@ -141,7 +147,7 @@ export function requestCylinderDissolveClose(
         const h = window.innerHeight;
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         try {
-          const field = await buildColorField(root, w, h);
+          const field = layerField;
           let originX = 0;
           let originY = 0;
           try {
