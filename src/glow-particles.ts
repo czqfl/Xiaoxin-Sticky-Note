@@ -1,17 +1,17 @@
-// 便签「粒子光效消散」动画（恢复版）：界面从随机几处开始碎裂成发光微粒，
-// 区域化朝相近方向加速上升、边升边淡出，全程带光晕辉光。
+// 便签「粒子光效消散」动画（减速·三批次版）：界面分三批从随机几处逐级碎裂成发光微粒，
+// 区域化朝相近方向加速上升、边升边淡出，全程带光晕辉光；整体消散更平缓、更持久、更具层次感。
 // ----------------------------------------------------------------------------
 // 触发：关闭窗口时播放（粒子风格 particle_mode = "particle" 时选用）。
 // 呼出时不播放动画：直接复原便签显示（见 note.ts summoned 处理）。
 //
 // 视觉要点（对齐需求）：
-// - **上中下三部分限制起爆**：便签竖向三等分——
-//   下 1/3 必须随机某点发起消散（~0ms）；
-//   上 1/3 随机从左侧 / 右侧 / 上侧边缘发起消散（~0ms）；
-//   中 1/3 必发 1 点（动画 ~40% 时起爆）；下/上各 35% 概率补充 1 点（~40% 时）。
-//   每个区域以自身为起点向外蔓延，方向性扩张速度：往上消散 > 左右消散 > 往下消散
+// - **三批次逐级起爆（减速、有层次）**：整体时长由 2.4s 拉长至 3.6s，消散更平缓持久——
+//   首批（~0ms）：仅 1~2 处起爆（下 1/3 随机 1 点 + 上 1/3 随机一侧边缘 1 点）；
+//   第二批（~43%，落在 40%~50%）：中 1/3 必发 1 点 + 下/上各 35% 概率补充 1 点；
+//   第三批（~74%，落在 70%~80%）：拾遗未覆盖区域，下/中/上再补 1~2 点接力消散。
+//   各区域以自身为起点向外蔓延，方向性扩张速度：往上消散 > 左右消散 > 往下消散
 //   （等效距离 上×0.4 / 左右×1.0 / 下×1.8）；幂函数蔓延（先慢后快）；
-//   花瓣状角度调制 → 扩散形状不规则（非圆形）；取 min 叠加 → 各区域前沿先后推进。
+//   花瓣状角度调制 → 扩散形状不规则（非圆形）；取 min 叠加 → 各区域前沿先后推进、衔接流畅无断层。
 // - 动画后 50%：便签整体透明度 100% → 50% 淡出（不必等 mask 铺满全窗）。
 // - **粒子自由飘散、无矩形边界约束**：等加速上升（speed = v0 + a·t）+ 随机左右偏转 ±55°
 //   + 横向恒定向漂移 ±30px/s + 水平轻摆 ±40px/s；粒子越过便签原本的矩形边界后继续
@@ -350,10 +350,12 @@ function runGlow(
   const density = Math.max(0, Math.min(100, particleDensity)) / 100;
   const k = Math.max(0.25, Math.min(4, 100 / Math.max(10, speed))); // 速度系数：200%→0.5（时长减半）
 
-  // ---- 时序参数（整体 ~2.4s：主体消散 1400ms + 透明度淡出收尾）
-  const wipe = Math.round(1400 * k); // 主体消散窗口 ms
-  const secondBatchAt = Math.round(960 * k); // 第二批区域在动画 ~40% 时起爆
-  const duration = Math.round(2400 * k); // 总时长（后半段透明度淡出代替铺满全窗）
+  // ---- 时序参数（整体 ~3.6s：比旧版 2.4s 拉长 50%，消散更平缓持久）----
+  // 三批次逐级起爆：首批 ~0ms（1~2 处）→ 第二批 ~43%（middle + 补充）→ 第三批 ~74%（拾遗）
+  const duration = Math.round(3600 * k); // 总时长（后半段透明度淡出代替铺满全窗）
+  const wipe = Math.round(2100 * k); // 主体消散窗口 ms（随总时长等比拉长，保持原有蔓延观感）
+  const secondBatchAt = Math.round(duration * 0.43); // 第二批区域在动画 ~43% 时起爆（落在 40%~50%）
+  const thirdBatchAt = Math.round(duration * 0.74); // 第三批区域在动画 ~74% 时起爆（落在 70%~80%）
 
   // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）。
   // remote 模式（粒子交给全屏透明粒子层窗口渲染，可飘出便签边界）下本窗口不建 canvas/GL。----
@@ -503,7 +505,10 @@ function runGlow(
   const mimg = mctx.createImageData(mw, mh);
   const mpx32 = new Uint32Array(mimg.data.buffer); // 32 位写入，仅改最高字节(alpha)
 
-  // 区域生成（每次播放重新生成 → 每次观感不同）
+  // ---------- 三批次逐级起爆（视觉连贯：各批次前沿先后推进、min 叠加无断层）----------
+  // 首批（~0ms）：下 1/3 必发 1 点 + 上 1/3 随机一侧边缘发 1 点 → 仅 1~2 处率先消散
+  // 第二批（~43%）：中 1/3 必发 1 点 + 下/上补充（各 ~35%）
+  // 第三批（~74%）：拾遗未覆盖区域，下/中/上再补 1~2 点，确保全幅衔接流畅、消散末段仍有新区域接力
   const diag = Math.hypot(w, h);
   interface DissolveRegion { x: number; y: number; t0: number; scale: number }
   const regions: DissolveRegion[] = [];
@@ -513,9 +518,12 @@ function runGlow(
     t0,
     scale: 1.1 + Math.random() * 0.25,
   });
-  // 下 1/3：必须随机某点（首批）
+  const jitter = (center: number, half: number): number => center + (Math.random() * 2 - 1) * half;
+
+  // —— 首批（~0ms）：仅 1~2 处起爆 ——
+  // 下 1/3：必发 1 点
   regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, Math.random() * 60));
-  // 上 1/3：随机 左 / 右 / 上 侧边缘发起（首批，贴在对应边缘上）
+  // 上 1/3：随机 左 / 右 / 上 侧边缘发起 1 点
   const side = Math.random();
   if (side < 1 / 3) {
     regions.push(makeRegion(Math.random() * 30, (Math.random() / 3) * h, Math.random() * 60)); // 左侧边
@@ -524,14 +532,25 @@ function runGlow(
   } else {
     regions.push(makeRegion(Math.random() * w, Math.random() * 30, Math.random() * 60)); // 上侧边
   }
-  // 中 1/3：必发 1 点（动画 40% 时起爆）
-  regions.push(makeRegion(Math.random() * w, (1 / 3 + Math.random() / 3) * h, secondBatchAt + Math.random() * 120 - 60));
-  // 补充起爆点（各 35% 概率，动画 40% 时）：下/上部各可能再多 1 点
+
+  // —— 第二批（~43%）：中 1/3 必发 + 下/上补充 ——
+  regions.push(makeRegion(Math.random() * w, (1 / 3 + Math.random() / 3) * h, jitter(secondBatchAt, 60)));
   if (Math.random() < 0.35) {
-    regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, secondBatchAt + Math.random() * 120 - 60));
+    regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, jitter(secondBatchAt, 60)));
   }
   if (Math.random() < 0.35) {
-    regions.push(makeRegion(Math.random() * w, Math.random() * 30, secondBatchAt + Math.random() * 120 - 60));
+    regions.push(makeRegion(Math.random() * w, Math.random() * 30, jitter(secondBatchAt, 60)));
+  }
+
+  // —— 第三批（~74%）：拾遗未覆盖区域，确保全幅衔接、消散末段仍有新区域接力 ——
+  if (Math.random() < 0.85) {
+    regions.push(makeRegion(Math.random() * w, (1 / 3 + Math.random() / 3) * h, jitter(thirdBatchAt, 70)));
+  }
+  if (Math.random() < 0.6) {
+    regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, jitter(thirdBatchAt, 70)));
+  }
+  if (Math.random() < 0.6) {
+    regions.push(makeRegion(Math.random() * w, Math.random() * 30, jitter(thirdBatchAt, 70)));
   }
   const noisePhase = Math.random() * 100; // 噪声相位随机 → 每次前沿弯曲不同
 
@@ -705,9 +724,9 @@ function runGlow(
   // 在 (x,y) 生成一粒发光微粒；颜色采样自该生成区域的主题色。
   const spawn = (x: number, y: number, age: number): void => {
     if (pcount >= maxP) return;
-    // 寿命加长（1800~3400ms，随速度缩放）：粒子有充足时间飘出便签矩形边界，
+    // 寿命加长（2400~4400ms，随速度缩放）：慢速下仍有充足漂浮时间，
     // 越过原始区域向外扩散，靠自身寿命/透明度衰减自然消散（无矩形边界销毁约束）
-    let life = Math.round((1800 + Math.random() * 1600) * k);
+    let life = Math.round((2400 + Math.random() * 2000) * k);
     const fit = duration - age - 40;
     if (fit < 120) return;
     if (life > fit) life = fit;
@@ -715,8 +734,8 @@ function runGlow(
     px[i] = x;
     py[i] = y;
     pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // 随机左右偏转 ±55°
-    pv0[i] = 20 + Math.random() * 40; // 初速度略随机（px/s，缓慢起飘，节奏更自然）
-    pv1[i] = 650; // 加速度相同（px/s²，明显加速）
+    pv0[i] = 14 + Math.random() * 26; // 初速度更低（px/s）：缓慢起飘，节奏更舒缓
+    pv1[i] = 430; // 加速度降低（px/s²）：整体上升更平缓、更具漂浮感
     plife[i] = life;
     page[i] = 0;
     psize[i] = 1.8; // 亮核 1.8px
