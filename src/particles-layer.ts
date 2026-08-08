@@ -23,10 +23,12 @@ interface ParticleLayerStart {
   fieldW: number;
   fieldH: number;
   fieldData: number[];
-  /** 粒子消散模式：消散时间场（单位 ms） */
-  tW: number;
-  tH: number;
-  tField: number[];
+  /** 粒子消散模式：发射网格（屏幕坐标，已含便签 origin 平移；单位 CSS px）。
+   *  由便签窗口用同一 dissolveTimeAt 网格算出 → 粒子出生点 = 消散点（单一真相源，无固定偏移）。 */
+  emitX: number[];
+  emitY: number[];
+  emitT: number[];
+  bins: number[][];
   /** 粒子强度 0~100 */
   density: number;
   /** 动画速度百分比（100=原速） */
@@ -85,9 +87,6 @@ let rectH = 1;
 let fieldW = 8;
 let fieldH = 8;
 let fieldData: number[] = new Array(64).fill(255);
-let tW = 8;
-let tH = 8;
-let tField: number[] = new Array(64).fill(0);
 let layerDensity = 50;
 
 const ensurePool = (n: number): void => {
@@ -119,17 +118,7 @@ const sampleColor = (lx: number, ly: number): [number, number, number] => {
   return [Math.min(255, r * f), Math.min(255, g * f), Math.min(255, b * f)];
 };
 
-const sampleT = (lx: number, ly: number): number => {
-  let fx = Math.round((lx / rectW) * tW);
-  if (fx < 0) fx = 0;
-  else if (fx >= tW) fx = tW - 1;
-  let fy = Math.round((ly / rectH) * tH);
-  if (fy < 0) fy = 0;
-  else if (fy >= tH) fy = tH - 1;
-  return tField[fy * tW + fx];
-};
-
-// ---- particle：从便签矩形内按 T 场时刻生成，向四周/上方飘散越过边界 ----
+// ---- particle：从便签矩形内按已传来的发射网格（屏幕坐标）时刻生成，向四周/上方飘散越过边界 ----
 const spawn = (sx: number, sy: number, age: number): void => {
   if (pcount >= maxP) return;
   let life = (1800 + Math.random() * 1600) * k;
@@ -147,7 +136,7 @@ const spawn = (sx: number, sy: number, age: number): void => {
   psize[i] = 1.8;
   pseed[i] = Math.random() * Math.PI * 2;
   psway[i] = (Math.random() - 0.5) * 60;
-  const [r, g, b] = sampleColor(sx - originX, sy - originY);
+  const [r, g, b] = sampleColor(sx - originX, sy - originY);   // 屏幕坐标 → 减 origin 回便签局部坐标取色
   pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
 };
 
@@ -171,49 +160,29 @@ function stopLayer(): void {
 
 // ---- 各模式的初始化 ----
 function buildEmitGrid(p: ParticleLayerStart): void {
-  rectW = Math.max(1, p.width);
-  rectH = Math.max(1, p.height);
   originX = p.originX;
   originY = p.originY;
+  rectW = Math.max(1, p.width);
+  rectH = Math.max(1, p.height);
   fieldW = p.fieldW || 8;
   fieldH = p.fieldH || 8;
   fieldData = p.fieldData || [];
-  tW = p.tW || 8;
-  tH = p.tH || 8;
-  tField = p.tField || [];
-  const spacing = 3;
-  const ecx = Math.max(2, Math.ceil(rectW / spacing));
-  const ecy = Math.max(2, Math.ceil(rectH / spacing));
-  ecount = ecx * ecy;
-  emitX = new Float32Array(ecount);
-  emitY = new Float32Array(ecount);
-  emitT = new Float32Array(ecount);
+  // 直接采用便签传来的「屏幕坐标发射网格 + 各自 T 时刻 + 分桶」（单一真相源）：
+  // 粒子出生点 = 便签消散点（坐标一致）、出生时刻 = 消散时刻（时刻一致），
+  // 不再用 T 场在粒子层二次重建位置 → 从根上消除"固定偏移间距"。
+  const ex = p.emitX || [];
+  const ey = p.emitY || [];
+  const et = p.emitT || [];
+  const bins = p.bins || [];
+  ecount = ex.length;
+  emitX = Float32Array.from(ex);
+  emitY = Float32Array.from(ey);
+  emitT = Float32Array.from(et);
   emitDone = new Uint8Array(ecount);
-  let ei = 0;
-  maxEmitT = 0;
-  for (let iy = 0; iy < ecy; iy++) {
-    for (let ix = 0; ix < ecx; ix++) {
-      const lx = (ix + 0.5) * spacing;
-      const ly = (iy + 0.5) * spacing;
-      emitX[ei] = originX + lx;
-      emitY[ei] = originY + ly;
-      let T = sampleT(lx, ly);
-      if (!isFinite(T) || T < 0) T = 0;
-      emitT[ei] = T;
-      if (T > maxEmitT) maxEmitT = T;
-      ei++;
-    }
-  }
   binSize = 20;
-  const binCount = Math.ceil(maxEmitT / binSize) + 2;
-  binPts = [];
-  for (let b = 0; b < binCount; b++) binPts.push([]);
-  for (let i = 0; i < ecount; i++) {
-    let b = Math.floor(emitT[i] / binSize);
-    if (b < 0) b = 0;
-    else if (b >= binCount) b = binCount - 1;
-    binPts[b].push(i);
-  }
+  binPts = bins.length ? bins.map((b) => b.slice()) : [[]];
+  maxEmitT = 0;
+  for (let i = 0; i < ecount; i++) if (emitT[i] > maxEmitT) maxEmitT = emitT[i];
   const peakAlive = Math.round(ecount * (0.03 + 0.97 * layerDensity / 100));
   ensurePool(peakAlive + 1500);
   pcount = 0;

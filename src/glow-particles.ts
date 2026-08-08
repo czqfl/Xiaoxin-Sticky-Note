@@ -32,8 +32,16 @@ let glowActive = false;
  *  避免快速呼出时把正在播放的新动画便签裁掉/隐藏（见 cleanupAfterHide 守卫）。 */
 let glowGen = 0;
 
-/** remote 模式（粒子交给全屏透明粒子层窗口）时，最近一次构建的消散时间场（供转发给粒子层）。 */
-let lastTField: { tW: number; tH: number; data: number[] } | null = null;
+/** remote 模式（粒子交给全屏透明粒子层窗口）时，最近一次构建的发射网格（屏幕坐标 + 各自 T 时刻 + 分桶）。
+ *  关键：这些坐标直接由「本窗口的 dissolveTimeAt 网格」算出（已含 origin 平移），
+ *  粒子层原样使用，不再用 T 场在粒子层里二次重建位置 → 杜绝 mask 与粒子轨迹的固定偏移（单一真相源）。 */
+let lastEmit: {
+  ex: Float32Array;
+  ey: Float32Array;
+  et: Float32Array;
+  bins: number[][];
+  n: number;
+} | null = null;
 
 /** 当前粒子动画的“立即中止”句柄（由 runGlow 注册；cancelGlowParticles 调用）。 */
 let cancelGlowFn: (() => void) | null = null;
@@ -158,32 +166,36 @@ export function requestGlowDissolveClose(
         }
       }
       if (aborted) return;
-      const animStartAt = performance.now(); // 动画开始时刻（粒子层用同一基准计算 age，严格同步）
       stopRun = runGlow(root, particleDensity, speed, () => {
         window.clearTimeout(watchdog);
         safeDone();
-      }, useRemote ? "remote" : "self");
-      // remote：立即发 start（颜色场/位置已就绪），粒子层与 mask 同步开始
-      if (useRemote && !aborted) {
-        const field = layerField;
-        const tfield = lastTField;
-        emit("particles-start", {
-          type: "particle",
-          originX: layerOrigin.x,
-          originY: layerOrigin.y,
-          width: window.innerWidth,
-          height: window.innerHeight,
-          fieldW: field?.fw ?? 8,
-          fieldH: field?.fh ?? 8,
-          fieldData: field ? Array.from(field.data) : [],
-          tW: tfield?.tW ?? 8,
-          tH: tfield?.tH ?? 8,
-          tField: tfield?.data ?? [],
-          density: particleDensity,
-          speed,
-          startAt: animStartAt,
-        }).catch(() => {});
-      }
+      }, useRemote ? "remote" : "self", layerOrigin,
+        // onStart：动画真正首帧时刻（与 mask 同 epoch）→ 此刻才把粒子层 startAt 设为同一基准，
+        // 避免「过早 capture performance.now()」导致的粒子层 age 比 mask 早一大截（固定时序偏移）。
+        (realStartAt: number) => {
+          if (!useRemote || aborted) return;
+          const field = layerField;
+          const emitGrid = lastEmit;
+          emit("particles-start", {
+            type: "particle",
+            originX: layerOrigin.x,
+            originY: layerOrigin.y,
+            width: window.innerWidth,
+            height: window.innerHeight,
+            fieldW: field?.fw ?? 8,
+            fieldH: field?.fh ?? 8,
+            fieldData: field ? Array.from(field.data) : [],
+            // 直接传「已含 origin 平移的屏幕坐标发射网格 + 各自 T 时刻 + 分桶」，
+            // 粒子层原样使用 → 粒子出生点 = 消散点（单一轨迹源），不再二次重建位置。
+            emitX: emitGrid ? Array.from(emitGrid.ex) : [],
+            emitY: emitGrid ? Array.from(emitGrid.ey) : [],
+            emitT: emitGrid ? Array.from(emitGrid.et) : [],
+            bins: emitGrid ? emitGrid.bins : [],
+            density: particleDensity,
+            speed,
+            startAt: realStartAt,
+          }).catch(() => {});
+        });
     } catch (e) {
       console.error("粒子光效消散动画异常:", e);
       window.clearTimeout(watchdog);
@@ -333,16 +345,22 @@ function buildColorField(root: HTMLElement, w: number, h: number): Promise<Color
   });
 }
 
-/** 播放一次粒子光效消散动画。 */
+/** 播放一次粒子光效消散动画。
+ * origin：remote 模式下便签窗口屏幕坐标（CSS px）；粒子出生网格直接 +origin 转屏幕坐标。
+ * onStart(realStartAt)：动画真正首帧时刻回调（与 mask 同 epoch）→ 供 remote 模式此刻同步粒子层 startAt。 */
 function runGlow(
   root: HTMLElement,
   particleDensity: number,
   speed: number,
   onDone: () => void,
   mode: "self" | "remote" = "self",
+  origin = { x: 0, y: 0 },
+  onStart?: (realStartAt: number) => void,
 ): () => void {
   const myGen = ++glowGen; // 本动画实例代次：作废上一轮遗留的延时清理
   const remote = mode === "remote";
+  const layerOriginX = origin.x; // remote：粒子层用屏幕坐标，网格直接 +origin
+  const layerOriginY = origin.y;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = window.innerWidth;
   const h = window.innerHeight;
@@ -627,10 +645,8 @@ function runGlow(
       Tfield[my * mw + mx] = dissolveTimeAt(nx, ny);
     }
   }
-  // remote 模式：把 T 场交给全屏粒子层窗口，使粒子生成时机与便签 mask 消散同步
-  if (remote) {
-    lastTField = { tW: mw, tH: mh, data: Array.from(Tfield) };
-  }
+  // （T 场仅用于本窗口 mask 渲染；remote 模式粒子位置/时刻由下方发射网格 lastEmit 原样转发，
+  //   不再用 T 场在粒子层二次重建 → 单一真相源、消除固定偏移。）
 
   // ---- mask 裁切：把 T 场逐像素 alpha 渲染到蒙版 canvas，驱动便签平滑消散 ----
   const setMask = (url: string): void => {
@@ -676,6 +692,9 @@ function runGlow(
   };
 
   // ---- 发射点网格：铺满整面，每个点在自身 T 时刻恰好生成一粒粒子 ----
+  // 关键一致性：粒子出生点 = 消散点（同一 dissolveTimeAt 网格），出生时刻 = 消散时刻。
+  // remote 模式下网格坐标直接 +origin（屏幕坐标）存入 lastEmit，粒子层原样使用，
+  // 不再用 T 场在粒子层二次重建位置 → 从根上消除「固定偏移间距」。
   const emitSpacing = 3;
   const ecx = Math.max(2, Math.ceil(w / emitSpacing));
   const ecy = Math.max(2, Math.ceil(h / emitSpacing));
@@ -686,12 +705,15 @@ function runGlow(
   const emitDone = new Uint8Array(ecount);
   let ei = 0;
   let maxEmitT = 0;
+  // remote：屏幕坐标偏移（粒子层窗口已全屏铺满，原点 = 屏幕左上角，直接 +origin）
+  const ox = remote ? layerOriginX : 0;
+  const oy = remote ? layerOriginY : 0;
   for (let iy = 0; iy < ecy; iy++) {
     for (let ix = 0; ix < ecx; ix++) {
       const nx = (ix + 0.5) * emitSpacing;
       const ny = (iy + 0.5) * emitSpacing;
-      emitX[ei] = nx;
-      emitY[ei] = ny;
+      emitX[ei] = nx + ox;
+      emitY[ei] = ny + oy;
       const T = dissolveTimeAt(nx, ny);
       emitT[ei] = T;
       if (T > maxEmitT) maxEmitT = T;
@@ -708,6 +730,10 @@ function runGlow(
     if (b < 0) b = 0;
     else if (b >= binCount) b = binCount - 1;
     binPts[b].push(i);
+  }
+  // remote：把「屏幕坐标发射网格 + 分桶」交给粒子层（单一真相源，原样使用，不二次重建位置）
+  if (remote) {
+    lastEmit = { ex: emitX, ey: emitY, et: emitT, bins: binPts, n: ecount };
   }
 
   // ---- 粒子池（SoA + swap-remove；初速度/加速度全粒子一致，等加速上升）----
@@ -916,6 +942,9 @@ function runGlow(
     if (endedLocal) return;
     renderMask(0);
     setMask(maskCanvas.toDataURL());
+    // 动画真正首帧时刻（与 mask 同 epoch）：此刻通知粒子层同步 startAt，
+    // 保证 remote 粒子层 age 时钟 ≈ 便签 mask age 时钟（最多 1 帧误差），消除固定时序偏移。
+    if (onStart) onStart(performance.now());
     try {
       root.style.clipPath = "";
       root.style.boxShadow = "none";
