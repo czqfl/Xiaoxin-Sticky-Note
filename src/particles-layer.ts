@@ -317,7 +317,7 @@ function startLayer(p: ParticleLayerStart): void {
   layerDensity = Math.max(0, Math.min(100, p.density ?? 50));
   k = Math.max(0.25, Math.min(4, 100 / Math.max(10, p.speed ?? 100)));
   buildEmitGrid(p);
-  duration = Math.round(2400 * k);
+  duration = Math.round(4800 * k); // 与便签侧消散总时长保持一致（glow-particles.ts 的 duration），避免粒子在消散途中被提前截断
   layerEnded = false;
   layerActive = true;
   started = false;

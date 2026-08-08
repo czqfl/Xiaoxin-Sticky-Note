@@ -844,6 +844,11 @@ export function mountNoteApp(noteId: string, preset = "") {
     // 呼出：恢复保存状态提示的显示（关闭动画期间的抑制结束）
     suppressSaveStatus = false;
     if (collapsed) expandFromEdge(false);
+    // 防御：若便签仍残留“隐藏时空画面”样式（clip/mask 未清，可能上次呼出的异步复原未生效），
+    // 立即复原显示——避免呼出后窗口空白、或需多次按键才显示。幂等，已正常显示时无害。
+    if (noteWindow.style.clipPath || noteWindow.style.webkitMaskImage || noteWindow.style.maskImage) {
+      restoreGlowSummoned();
+    }
     // 呼出打断进行中的关闭动画：先取消关闭（取消会复原页面、且不会触发 finish/隐藏），
     // 再按普通呼出流程处理，避免“关闭动画没播完就呼出”导致窗口又被隐藏/动画卡住。
     if (closing) {
@@ -892,6 +897,9 @@ export function mountNoteApp(noteId: string, preset = "") {
           restoreGlowSummoned();
         });
     }
+    // 确保窗口真正激活/置顶：Windows 前台锁会令全局快捷键触发的 show 偶尔不激活窗口
+    // （窗口可见却躲在别的窗口后面 → 看似“没呼出”，需多次按键）。从窗口自身上下文再 focus 一次。
+    appWindow.setFocus().catch(() => {});
   });
 
   // ---- 富文本格式化 ----

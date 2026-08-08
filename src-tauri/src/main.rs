@@ -1355,6 +1355,7 @@ fn dispatch_shortcut(app: &AppHandle, id: u32) {
         let any_visible = app
             .webview_windows()
             .values()
+            .filter(|w| !matches!(w.label(), "particles" | "settings" | "history"))
             .any(|w| w.is_visible().unwrap_or(false));
         if any_visible {
             close_all_with_anim(app);
