@@ -5,10 +5,9 @@
 // 呼出时不播放动画：直接复原便签显示（见 note.ts summoned 处理）。
 //
 // 视觉要点（对齐需求）：
-// - **三批次逐级起爆（减速、有层次）**：整体时长由 2.4s 拉长至 3.6s，消散更平缓持久——
-//   首批（~0ms）：仅 1~2 处起爆（下 1/3 随机 1 点 + 上 1/3 随机一侧边缘 1 点）；
-//   第二批（~43%，落在 40%~50%）：中 1/3 必发 1 点 + 下/上各 35% 概率补充 1 点；
-//   第三批（~74%，落在 70%~80%）：拾遗未覆盖区域，下/中/上再补 1~2 点接力消散。
+// - **智能三批次逐级起爆（再减速、有层次）**：整体时长 ~4.8s，比上一版 3.6s 再拉长，消散更平缓持久；
+//   每批新起爆点用**贪心最远点采样**自动选"距已有起点最远 = 当前最空的区域"发起，逐级吞掉空隙、衔接自然；
+//   首批（~0ms）第 1 点落于下 1/3（自然从底部升起）、第 2 点取最远点；第二批（~43%）补 2~3 点；第三批（~74%）再补 2~3 点。
 //   各区域以自身为起点向外蔓延，方向性扩张速度：往上消散 > 左右消散 > 往下消散
 //   （等效距离 上×0.4 / 左右×1.0 / 下×1.8）；幂函数蔓延（先慢后快）；
 //   花瓣状角度调制 → 扩散形状不规则（非圆形）；取 min 叠加 → 各区域前沿先后推进、衔接流畅无断层。
@@ -350,10 +349,10 @@ function runGlow(
   const density = Math.max(0, Math.min(100, particleDensity)) / 100;
   const k = Math.max(0.25, Math.min(4, 100 / Math.max(10, speed))); // 速度系数：200%→0.5（时长减半）
 
-  // ---- 时序参数（整体 ~3.6s：比旧版 2.4s 拉长 50%，消散更平缓持久）----
-  // 三批次逐级起爆：首批 ~0ms（1~2 处）→ 第二批 ~43%（middle + 补充）→ 第三批 ~74%（拾遗）
-  const duration = Math.round(3600 * k); // 总时长（后半段透明度淡出代替铺满全窗）
-  const wipe = Math.round(2100 * k); // 主体消散窗口 ms（随总时长等比拉长，保持原有蔓延观感）
+  // ---- 时序参数（整体 ~4.8s：比上一版 3.6s 再拉长 ~33%，消散更平缓持久）----
+  // 智能三批次逐级起爆：首批 ~0ms → 第二批 ~43% → 第三批 ~74%，每批起点由最远点采样自动选最空区域
+  const duration = Math.round(4800 * k); // 总时长（后半段透明度淡出代替铺满全窗）
+  const wipe = Math.round(2900 * k); // 主体消散窗口 ms（随总时长等比拉长，保持原有蔓延观感）
   const secondBatchAt = Math.round(duration * 0.43); // 第二批区域在动画 ~43% 时起爆（落在 40%~50%）
   const thirdBatchAt = Math.round(duration * 0.74); // 第三批区域在动画 ~74% 时起爆（落在 70%~80%）
 
@@ -505,10 +504,9 @@ function runGlow(
   const mimg = mctx.createImageData(mw, mh);
   const mpx32 = new Uint32Array(mimg.data.buffer); // 32 位写入，仅改最高字节(alpha)
 
-  // ---------- 三批次逐级起爆（视觉连贯：各批次前沿先后推进、min 叠加无断层）----------
-  // 首批（~0ms）：下 1/3 必发 1 点 + 上 1/3 随机一侧边缘发 1 点 → 仅 1~2 处率先消散
-  // 第二批（~43%）：中 1/3 必发 1 点 + 下/上补充（各 ~35%）
-  // 第三批（~74%）：拾遗未覆盖区域，下/中/上再补 1~2 点，确保全幅衔接流畅、消散末段仍有新区域接力
+  // ---------- 智能三批次起爆：贪心最远点采样，优先填补"最空"区域（视觉连贯：各前锋先后推进、min 叠加无断层）----------
+  // 思路：每批新起爆点都选"距已有所有起爆点最远"的位置（即当前最空 / 最晚被波及的区域），
+  // 让消散从多个方向逐级吞掉空隙，避免随机撒点导致的局部堆积或留白。
   const diag = Math.hypot(w, h);
   interface DissolveRegion { x: number; y: number; t0: number; scale: number }
   const regions: DissolveRegion[] = [];
@@ -518,40 +516,52 @@ function runGlow(
     t0,
     scale: 1.1 + Math.random() * 0.25,
   });
-  const jitter = (center: number, half: number): number => center + (Math.random() * 2 - 1) * half;
+  // 与 propagate 一致的有效距离度量（上消散快、下消散慢 → 等效距离 上×0.4/下×1.8），
+  // 使"最空"判定与真实蔓延速度对齐。
+  const effDist = (x: number, y: number, r: DissolveRegion): number => {
+    const dx = x - r.x;
+    const dy = y - r.y;
+    return Math.hypot(dx, dy < 0 ? dy * 0.4 : dy * 1.8);
+  };
+  // 候选网格（不必太密，~每 28px 一个采样点即可）
+  const gridStep = Math.max(20, Math.min(40, Math.round(Math.min(w, h) / 10)));
+  const cands: { x: number; y: number }[] = [];
+  for (let yy = gridStep / 2; yy < h; yy += gridStep) {
+    for (let xx = gridStep / 2; xx < w; xx += gridStep) cands.push({ x: xx, y: yy });
+  }
+  // 贪心最远点：逐个选出距"已有所有起点（含本批已选）"最远的点 → 填补当前最大空隙；
+  // 加微小随机扰动避免每次都落在完全相同的极端角点，使观感自然且每次不同。
+  const pickFarthest = (count: number, t0: number, jitterHalf: number): void => {
+    for (let n = 0; n < count; n++) {
+      let best: { x: number; y: number } | null = null;
+      let bestD = -1;
+      for (const c of cands) {
+        let md = Infinity;
+        for (const r of regions) {
+          const d = effDist(c.x, c.y, r);
+          if (d < md) md = d;
+        }
+        md += (Math.random() * 0.05) * diag; // 轻微扰动：避免每次都选同一极端角点
+        if (md > bestD) {
+          bestD = md;
+          best = c;
+        }
+      }
+      if (best) {
+        regions.push(makeRegion(best.x, best.y, t0 + (Math.random() * 2 - 1) * jitterHalf));
+      }
+    }
+  };
 
-  // —— 首批（~0ms）：仅 1~2 处起爆 ——
-  // 下 1/3：必发 1 点
-  regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, Math.random() * 60));
-  // 上 1/3：随机 左 / 右 / 上 侧边缘发起 1 点
-  const side = Math.random();
-  if (side < 1 / 3) {
-    regions.push(makeRegion(Math.random() * 30, (Math.random() / 3) * h, Math.random() * 60)); // 左侧边
-  } else if (side < 2 / 3) {
-    regions.push(makeRegion(w - Math.random() * 30, (Math.random() / 3) * h, Math.random() * 60)); // 右侧边
-  } else {
-    regions.push(makeRegion(Math.random() * w, Math.random() * 30, Math.random() * 60)); // 上侧边
-  }
+  // —— 首批（~0ms）：第 1 点落于下 1/3（自然从底部升起），第 2 点取距其最远处 → 仅 1~2 处率先消散 ——
+  regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, Math.random() * 40));
+  pickFarthest(1, Math.random() * 40, 45);
 
-  // —— 第二批（~43%）：中 1/3 必发 + 下/上补充 ——
-  regions.push(makeRegion(Math.random() * w, (1 / 3 + Math.random() / 3) * h, jitter(secondBatchAt, 60)));
-  if (Math.random() < 0.35) {
-    regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, jitter(secondBatchAt, 60)));
-  }
-  if (Math.random() < 0.35) {
-    regions.push(makeRegion(Math.random() * w, Math.random() * 30, jitter(secondBatchAt, 60)));
-  }
+  // —— 第二批（~43%）：在剩余最空区域补 2~3 个起爆点 ——
+  pickFarthest(2 + (Math.random() < 0.5 ? 1 : 0), secondBatchAt, 60);
 
-  // —— 第三批（~74%）：拾遗未覆盖区域，确保全幅衔接、消散末段仍有新区域接力 ——
-  if (Math.random() < 0.85) {
-    regions.push(makeRegion(Math.random() * w, (1 / 3 + Math.random() / 3) * h, jitter(thirdBatchAt, 70)));
-  }
-  if (Math.random() < 0.6) {
-    regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, jitter(thirdBatchAt, 70)));
-  }
-  if (Math.random() < 0.6) {
-    regions.push(makeRegion(Math.random() * w, Math.random() * 30, jitter(thirdBatchAt, 70)));
-  }
+  // —— 第三批（~74%）：继续填补最空区域 2~3 个，确保全幅衔接、消散末段仍有新区域接力 ——
+  pickFarthest(2 + (Math.random() < 0.5 ? 1 : 0), thirdBatchAt, 70);
   const noisePhase = Math.random() * 100; // 噪声相位随机 → 每次前沿弯曲不同
 
   // 确定性值噪声
@@ -724,9 +734,9 @@ function runGlow(
   // 在 (x,y) 生成一粒发光微粒；颜色采样自该生成区域的主题色。
   const spawn = (x: number, y: number, age: number): void => {
     if (pcount >= maxP) return;
-    // 寿命加长（2400~4400ms，随速度缩放）：慢速下仍有充足漂浮时间，
+    // 寿命加长（3000~5200ms，随速度缩放）：慢速下仍有充足漂浮时间，
     // 越过原始区域向外扩散，靠自身寿命/透明度衰减自然消散（无矩形边界销毁约束）
-    let life = Math.round((2400 + Math.random() * 2000) * k);
+    let life = Math.round((3000 + Math.random() * 2200) * k);
     const fit = duration - age - 40;
     if (fit < 120) return;
     if (life > fit) life = fit;
@@ -734,8 +744,8 @@ function runGlow(
     px[i] = x;
     py[i] = y;
     pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // 随机左右偏转 ±55°
-    pv0[i] = 14 + Math.random() * 26; // 初速度更低（px/s）：缓慢起飘，节奏更舒缓
-    pv1[i] = 430; // 加速度降低（px/s²）：整体上升更平缓、更具漂浮感
+    pv0[i] = 10 + Math.random() * 20; // 初速度更低（px/s）：缓慢起飘，节奏更舒缓
+    pv1[i] = 330; // 加速度进一步降低（px/s²）：整体上升更平缓、更具漂浮感
     plife[i] = life;
     page[i] = 0;
     psize[i] = 1.8; // 亮核 1.8px
