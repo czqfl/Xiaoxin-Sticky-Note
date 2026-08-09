@@ -52,7 +52,7 @@ export interface Settings {
   bg_immersive?: boolean;
   /** 靠边自动收起（QQ 贴边风格）：便签拖到屏幕边缘附近、鼠标离开时收起，移回时弹出 */
   edge_snap?: boolean;
-  /** 便签存储目录（绝对路径，可空；空 = 默认应用数据目录 %APPDATA%/StickyNotes） */
+  /** 便签存储目录（绝对路径，可空；空 = 默认应用数据目录 %APPDATA%/XiaoxinStickyNote） */
   notes_dir?: string;
   /** 大模型 API Base URL（OpenAI 兼容，可空；空 = https://api.openai.com/v1） */
   llm_base_url?: string;

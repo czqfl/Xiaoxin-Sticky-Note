@@ -68,10 +68,10 @@ async function copyRobust(src, destName) {
 }
 
 const setup = findSetupExe();
-const portable = join(root, "src-tauri/target/release/sticky-note-tauri.exe");
+const portable = join(root, "src-tauri/target/release/xiaoxin-sticky-note.exe");
 
-await copyRobust(setup, "StickyNote_1.0.0_x64-setup.exe");
-await copyRobust(portable, "sticky-note-tauri.exe");
+await copyRobust(setup, "XiaoxinStickyNote_1.0.0_x64-setup.exe");
+await copyRobust(portable, "xiaoxin-sticky-note.exe");
 
 if (!process.exitCode) {
   console.log("[copy-bundle] 完成：安装包与便携版已置于项目根目录（与 src 同级）。");

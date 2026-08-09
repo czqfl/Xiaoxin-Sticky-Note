@@ -243,7 +243,7 @@ export function setSettings(next: Settings): void {
   window.dispatchEvent(new CustomEvent(SETTINGS_EVENT));
 }
 
-const SETTINGS_EVENT = "stickynote-settings-changed";
+const SETTINGS_EVENT = "xiaoxin-sticky-note-settings-changed";
 // 窗口内事件（如标题栏一键切换主题、重新载入 Markdown 样式）也走同一刷新流程
 if (typeof window !== "undefined") {
   window.addEventListener(SETTINGS_EVENT, () => {

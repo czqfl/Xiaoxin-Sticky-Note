@@ -1,8 +1,8 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
-  "productName": "StickyNote",
+  "productName": "XiaoxinStickyNote",
   "version": "1.0.0",
-  "identifier": "com.yourname.stickynote",
+  "identifier": "com.xiaoxin.xiaoxinstickynote",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",

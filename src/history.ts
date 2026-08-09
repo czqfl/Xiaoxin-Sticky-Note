@@ -53,7 +53,7 @@ export function mountHistoryApp() {
     });
 
   // 设置变更时实时同步背景（与便签窗口一致）
-  listen("stickynote-settings-changed", () => {
+  listen("xiaoxin-sticky-note-settings-changed", () => {
     getSettings().then((s) => void applyHistoryBg(s)).catch(() => {});
   }).catch((e) => console.error("监听设置变更失败:", e));
 

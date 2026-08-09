@@ -1,4 +1,4 @@
-# StickyNote 便签
+# XiaoxinStickyNote 便签
 
 一款**桌面便签（桌面小纸条）**应用，基于 **Tauri 2（Rust 后端）+ Vite + TypeScript** 构建。
 
@@ -71,8 +71,8 @@
 
 ### 10. 自动保存与本地存储
 - 内容、尺寸、位置、标题、颜色、Markdown 模式、翻译开关、各项开关状态均**自动持久化**，无需手动保存。
-- 全部数据保存在本地 `%APPDATA%/StickyNotes/` 目录，离线可用、隐私可控。
-- **每条便签都是独立的一个 JSON 文件**（`sticky_note_<id>.json`），可在资源管理器里直接找到并用记事本打开查看（文件内是带排版的 JSON，正文以 HTML 形式存储）；在「设置 → 便签存储路径」可把存储目录改到你想要的位置，修改后原有便签会**自动迁移**到新目录。
+- 全部数据保存在本地 `%APPDATA%/XiaoxinStickyNote/` 目录，离线可用、隐私可控。
+- **每条便签都是独立的一个 JSON 文件**（`xiaoxin_sticky_note_<id>.json`），可在资源管理器里直接找到并用记事本打开查看（文件内是带排版的 JSON，正文以 HTML 形式存储）；在「设置 → 便签存储路径」可把存储目录改到你想要的位置，修改后原有便签会**自动迁移**到新目录。
 
 ---
 
@@ -137,7 +137,7 @@
   - API Key：必填，留空则「MD / 文本」按钮会提示先配置。
   - 模型名：可空（默认 `gpt-4o-mini`）。兼容 DeepSeek、通义、智谱等任意 OpenAI 格式端点。
 - **便签存储路径**：
-  - 存储目录：每条便签的 JSON 文件所在位置，可空（默认 `%APPDATA%/StickyNotes`）。
+  - 存储目录：每条便签的 JSON 文件所在位置，可空（默认 `%APPDATA%/XiaoxinStickyNote`）。
   - 「浏览」用系统文件夹选择器选目录；「打开文件夹」用资源管理器打开当前目录（便签是标准 JSON 文件，**可用记事本直接打开查看**）；「恢复默认」清空回默认目录。
   - 修改并保存后，原有便签会**自动迁移**到新目录，不会丢失。
 - **Markdown 样式**：
@@ -153,11 +153,11 @@
 所有数据保存在本地（目录可在「设置 → 便签存储路径」中自定义，以下为默认值）：
 
 ```
-%APPDATA%/StickyNotes/
+%APPDATA%/XiaoxinStickyNote/
 ├── settings.json          # 全局设置（快捷键、翻译方式/密钥、主题、背景、Markdown、大模型、存储路径等）
 ├── open_notes.json        # 当前「打开中」的便签 id 列表（用于呼出 / 托盘菜单）
 ├── md_custom.css          # 自定义 Markdown 样式文件（若使用）
-└── sticky_note_<id>.json  # 每条便签一个文件：内容、标题、颜色、尺寸、Markdown 模式等
+└── xiaoxin_sticky_note_<id>.json  # 每条便签一个文件：内容、标题、颜色、尺寸、Markdown 模式等
 ```
 
 - **每条便签都是独立的一个 JSON 文件**：在资源管理器里可直接找到并用记事本打开查看。文件内是带排版的 JSON，正文以 HTML 形式存储（例如在 `<p>` 标签里）。
@@ -192,14 +192,14 @@
 
 最新构建的安装包已提交在仓库的 `releases/v1.0.0/` 目录，可直接下载：
 
-- **安装版（推荐）**：`releases/v1.0.0/StickyNote_1.0.0_x64-setup.exe`
+- **安装版（推荐）**：`releases/v1.0.0/XiaoxinStickyNote_1.0.0_x64-setup.exe`
   - 若仓库为公开仓库，可直接通过原始链接下载：
     `https://github.com/czqfl/StickyNote/raw/main/releases/v1.0.0/StickyNote_1.0.0_x64-setup.exe`
-- **便携版**：`releases/v1.0.0/sticky-note-tauri.exe`
+- **便携版**：`releases/v1.0.0/xiaoxin-sticky-note.exe`
   - 原始链接：`https://github.com/czqfl/StickyNote/raw/main/releases/v1.0.0/sticky-note-tauri.exe`
 
 说明：
-- 安装版会写入开始菜单、可卸载；便携版为单文件 exe，双击即运行（数据仍保存在 `%APPDATA%/StickyNotes/`）。
+- 安装版会写入开始菜单、可卸载；便携版为单文件 exe，双击即运行（数据仍保存在 `%APPDATA%/XiaoxinStickyNote/`）。
 - 首次运行若提示缺少 WebView2 运行时，按提示安装即可（Windows 10/11 多数已自带）。
 - 若希望用「GitHub Releases」方式发布（资产不在 git 历史中，更干净），可在 GitHub 网页端据此目录创建 Release，或提供 Personal Access Token 后由脚本生成。
 
@@ -246,10 +246,10 @@ npm run pack
 
 打包产物位置：
 
-- 安装包：`src-tauri/target/release/bundle/nsis/StickyNote_1.0.0_x64-setup.exe`
-- 便携版：`src-tauri/target/release/sticky-note-tauri.exe`
+- 安装包：`src-tauri/target/release/bundle/nsis/XiaoxinStickyNote_1.0.0_x64-setup.exe`
+- 便携版：`src-tauri/target/release/xiaoxin-sticky-note.exe`
 
-`npm run pack` 会在打包完成后，把上述两个文件再复制一份到项目根目录（即仓库中的 `StickyNote_1.0.0_x64-setup.exe` 与 `sticky-note-tauri.exe`），方便取用与发布。
+`npm run pack` 会在打包完成后，把上述两个文件再复制一份到项目根目录（即仓库中的 `XiaoxinStickyNote_1.0.0_x64-setup.exe` 与 `xiaoxin-sticky-note.exe`），方便取用与发布。
 
 ---
 
@@ -269,9 +269,9 @@ releases/         已发布的安装包 / 便携版（供下载）
 - **便签关了还在托盘？** 是的。关闭只是隐藏到托盘，可在托盘右键菜单重新打开，或按「呼出便签」快捷键全部显示。
 - **翻译没反应？** 检查「设置」中是否已选择翻译方式并（对百度/有道）填入密钥；MyMemory 无需密钥。
 - **全局快捷键不生效？** 确认没有与其它全局软件冲突；修改后点「保存」会自动重新注册。
-- **数据在哪？** 见[数据存储](#数据存储)；如需备份，复制整个 `StickyNotes` 文件夹即可。
+- **数据在哪？** 见[数据存储](#数据存储)；如需备份，复制整个 `XiaoxinStickyNote` 文件夹即可。
 - **便携版和安装版区别？** 仅分发方式不同，功能完全一致；数据目录一致。
 
 ---
 
-*StickyNote · 本地优先的桌面便签 · Tauri 2 + Rust + Vite/TypeScript*
+*XiaoxinStickyNote · 本地优先的桌面便签 · Tauri 2 + Rust + Vite/TypeScript*

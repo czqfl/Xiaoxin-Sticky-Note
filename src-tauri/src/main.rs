@@ -6,7 +6,7 @@ use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::Mutex;
 use tauri::{
@@ -83,7 +83,7 @@ fn storage_dir() -> PathBuf {
     let appdata = std::env::var("APPDATA").unwrap_or_else(|_| {
         std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())
     });
-    PathBuf::from(appdata).join("StickyNotes")
+    PathBuf::from(appdata).join("XiaoxinStickyNote")
 }
 
 /// 由 settings.notes_dir 字段推导实际便签目录：空或无效路径时回退默认应用数据目录。
@@ -104,7 +104,7 @@ fn notes_dir() -> PathBuf {
 }
 
 fn note_path(id: &str) -> PathBuf {
-    notes_dir().join(format!("sticky_note_{}.json", id))
+    notes_dir().join(format!("xiaoxin_sticky_note_{}.json", id))
 }
 
 /// 确保“设置/缓存”目录存在（固定为应用数据目录，与便签存储目录解耦）。
@@ -128,7 +128,7 @@ fn migrate_notes_to(from: &PathBuf, to: &PathBuf) -> Result<(), String> {
             let p = entry.path();
             let ok = p
                 .file_name()
-                .map(|n| n.to_string_lossy().starts_with("sticky_note_"))
+                .map(|n| n.to_string_lossy().starts_with("xiaoxin_sticky_note_"))
                 .unwrap_or(false)
                 && p.extension().map_or(false, |e| e == "json");
             if !ok {
@@ -144,6 +144,68 @@ fn migrate_notes_to(from: &PathBuf, to: &PathBuf) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// 递归复制目录（用于跨盘迁移时目录无法 rename 的兜底）。
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dst)?;
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        let dest = dst.join(entry.file_name());
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dest)?;
+        } else {
+            std::fs::copy(entry.path(), &dest)?;
+        }
+    }
+    Ok(())
+}
+
+/// 一次性迁移：把旧默认数据目录 %APPDATA%/StickyNotes 整体搬到 %APPDATA%/XiaoxinStickyNote，
+/// 并把每条便签的文件名前缀 sticky_note_ 改为 xiaoxin_sticky_note_，兼容旧版本用户的数据，
+/// 避免升级后“便签全丢”。仅在旧目录存在、且与新目录不同时执行，幂等（跑过一次后旧目录已不存在）。
+fn migrate_legacy_storage() {
+    let appdata = std::env::var("APPDATA").unwrap_or_else(|_| {
+        std::env::var("USERPROFILE").unwrap_or_else(|_| ".".to_string())
+    });
+    let old_dir = PathBuf::from(&appdata).join("StickyNotes");
+    let new_dir = storage_dir();
+    if !old_dir.exists() || old_dir == new_dir {
+        return;
+    }
+    let _ = std::fs::create_dir_all(&new_dir);
+    if let Ok(entries) = std::fs::read_dir(&old_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let fname = match p.file_name() {
+                Some(f) => f.to_string_lossy().to_string(),
+                None => continue,
+            };
+            let dest_name = if fname.starts_with("sticky_note_") {
+                fname.replacen("sticky_note_", "xiaoxin_sticky_note_", 1)
+            } else {
+                fname
+            };
+            let dest = new_dir.join(dest_name);
+            if dest.exists() {
+                continue; // 新目录已存在同名，跳过以免覆盖
+            }
+            let is_dir = p.is_dir();
+            // 同盘 rename 即可；跨盘 rename 失败则复制后删除（保留原文件以防中断）
+            if std::fs::rename(&p, &dest).is_err() {
+                if is_dir {
+                    if copy_dir_all(&p, &dest).is_ok() {
+                        let _ = std::fs::remove_dir_all(&p);
+                    }
+                } else if std::fs::copy(&p, &dest).is_ok() {
+                    let _ = std::fs::remove_file(&p);
+                }
+            }
+        }
+    }
+    // 旧目录若已清空则删除
+    let _ = std::fs::remove_dir(&old_dir);
 }
 
 /// 去除 HTML 标签，提取纯文本用于历史列表摘要
@@ -201,11 +263,11 @@ fn list_notes() -> Result<Vec<NoteMeta>, String> {
             continue;
         }
         let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        // 只把 sticky_note_<id>.json 视为便签，排除 settings.json / open_notes.json 等配置文件
-        if !name.starts_with("sticky_note_") {
+        // 只把 xiaoxin_sticky_note_<id>.json 视为便签，排除 settings.json / open_notes.json 等配置文件
+        if !name.starts_with("xiaoxin_sticky_note_") {
             continue;
         }
-        let id = name.strip_prefix("sticky_note_").unwrap_or(name).to_string();
+        let id = name.strip_prefix("xiaoxin_sticky_note_").unwrap_or(name).to_string();
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         let data: NoteData = match serde_json::from_str(&content) {
             Ok(d) => d,
@@ -368,7 +430,7 @@ struct Settings {
     /// 靠边自动收起（QQ 贴边风格）
     #[serde(default)]
     edge_snap: bool,
-    /// 便签存储目录（绝对路径，可空；空 = 默认应用数据目录 %APPDATA%/StickyNotes）
+    /// 便签存储目录（绝对路径，可空；空 = 默认应用数据目录 %APPDATA%/XiaoxinStickyNote）
     #[serde(default)]
     notes_dir: String,
     /// 大模型 API Base URL（OpenAI 兼容，可空；空 = https://api.openai.com/v1）
@@ -2070,6 +2132,8 @@ fn main() {
                 .build(),
         )
         .setup(|app| {
+            // ---- 启动时一次性迁移旧数据目录（StickyNotes → XiaoxinStickyNote）----
+            migrate_legacy_storage();
             // ---- 系统托盘（右键菜单含当前打开的便签列表）----
             let menu = build_tray_menu(app.handle())?;
 

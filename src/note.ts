@@ -926,7 +926,7 @@ export function mountNoteApp(noteId: string, preset = "") {
   ];
 
   // ---- 最近使用颜色（跨便签、跨重启持久化，最多保留 8 个）----
-  const RECENT_COLORS_KEY = "sticky-note-recent-colors";
+  const RECENT_COLORS_KEY = "xiaoxin-sticky-note-recent-colors";
   function loadRecentColors(): string[] {
     try {
       const v = JSON.parse(localStorage.getItem(RECENT_COLORS_KEY) || "[]");

@@ -3517,28 +3517,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
 
 [[package]]
-name = "sticky-note-tauri"
-version = "1.0.0"
-dependencies = [
- "arboard",
- "base64 0.22.1",
- "chrono",
- "image",
- "reqwest 0.12.28",
- "serde",
- "serde_json",
- "sha2",
- "tauri",
- "tauri-build",
- "tauri-plugin-dialog",
- "tauri-plugin-fs",
- "tauri-plugin-global-shortcut",
- "tauri-plugin-single-instance",
- "uuid",
- "windows-sys 0.59.0",
-]
-
-[[package]]
 name = "string_cache"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5377,6 +5355,28 @@ name = "x11rb-protocol"
 version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
+
+[[package]]
+name = "xiaoxin-sticky-note"
+version = "1.0.0"
+dependencies = [
+ "arboard",
+ "base64 0.22.1",
+ "chrono",
+ "image",
+ "reqwest 0.12.28",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tauri",
+ "tauri-build",
+ "tauri-plugin-dialog",
+ "tauri-plugin-fs",
+ "tauri-plugin-global-shortcut",
+ "tauri-plugin-single-instance",
+ "uuid",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "xkeysym"
