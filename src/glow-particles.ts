@@ -669,6 +669,20 @@ function runGlow(
     }
     mctx.putImageData(mimg, 0, 0);
   };
+  // 剩余可见像素占比（0=全消失，1=全可见）。用同一 T 场逐像素计算，
+  // 让便签整体透明度与 mask 擦除、粒子起爆严格同拍（与速度无关）——解决“便签还亮着、
+  // 粒子已飞走”的脱节间隔：剩下的可见面积越少，整体越暗，二者永远不会错拍。
+  const coverageAt = (age: number): number => {
+    let sum = 0;
+    const n = Tfield.length;
+    for (let i = 0; i < n; i++) {
+      let a = (age - Tfield[i]) / featherMs;
+      if (a < 0) a = 0;
+      else if (a > 1) a = 1;
+      sum += 1 - a; // dissolve：可见→消散，此处为“可见占比”
+    }
+    return sum / n;
+  };
   // 蒙版替换：先解码（new Image onload）再 set，避免逐帧 dataURL 闪烁
   let lastMaskPush = -1;
   let maskSeq = 0;
@@ -841,12 +855,10 @@ function runGlow(
 
     // ---- 推进 mask 消散 + 发射点按各自 T 时刻生成粒子 ----
     pushMask(age, false);
-    // 动画后 50%：便签整体透明度 100% → 50% 淡出
-    const fadeHalf = duration * 0.5;
-    if (age > fadeHalf) {
-      const p = Math.min(1, (age - fadeHalf) / fadeHalf);
-      root.style.opacity = (1 - 0.5 * p).toFixed(3);
-    }
+    // 便签整体透明度跟随「剩余可见比例」联动：剩下的可见面积越少整体越暗，
+    // 与粒子碎裂、飞散严格同步（任意速度下都不会出现“便签还亮着、粒子已飞走”的间隔）。
+    const cov = coverageAt(age);
+    root.style.opacity = (0.1 + 0.9 * cov).toFixed(3);
     // ---- 粒子（仅 self 模式在本窗口渲染；remote 模式粒子由全屏粒子层窗口渲染）----
     if (!remote) {
       // 按粒子数量节流发射：density 越低，保留的发射点比例越小（整面均匀变稀）；
