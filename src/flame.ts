@@ -282,7 +282,11 @@ function runFlame(
       if (t < base) base = t;
     }
     const n = fbm(nx * noiseScale, ny * noiseScale) * noiseAmp;
-    const j = (hash2(Math.round(nx), Math.round(ny)) * 2 - 1) * jitterAmp;
+    // 抖动改用平滑值噪声（多倍频）：避免逐列白噪声使“哪些列有燃烧带”支离破碎，
+    // 那是“竖条/矩形”伪影的第一成因（配合第三步的逐列硬裁剪放大成孤立长条）。
+    const j =
+      ((valueNoise(nx * (1 / 16), ny * (1 / 16)) * 0.7 +
+        valueNoise(nx * (1 / 6), ny * (1 / 6)) * 0.3) * 2 - 1) * jitterAmp;
     let T = base + n + j;
     if (T < 0) T = 0;
     else if (T > baseMax + noiseAmp + jitterAmp) T = baseMax + noiseAmp + jitterAmp;
@@ -375,7 +379,7 @@ function runFlame(
     if (!fireImg || !firePx || !fireCtx || !fctx2) return;
     const progress = Math.min(1, age / wipe);
     // 火焰高度随侵蚀进度：初期低矮（~10px）→ 后期升高（~40px），压低整体高度→火舌而非厚片
-    const flameH = (10 + 30 * progress) * (0.7 + 0.3 * density);
+    const flameH = (8 + 22 * progress) * (0.75 + 0.25 * density);
     const flameRows = Math.max(3, Math.round((flameH / h) * fireH));
     const injectHeat = 140 + 35 * density; // 注入热值：降低基准→主体橙红，偶发火尖才到黄
 
@@ -384,7 +388,6 @@ function runFlame(
     const src = fireBufA;
     const dst = fireBufB;
     dst.fill(0);
-    const rows = mh;
 
     // 1) 双向传播（Doom Fire 核心：每个像素向「上下」两个方向按衰减系数扩散，读 src 写 dst）
     //    ——火焰在燃烧前沿的**两侧**都可见：上边沿、洞下沿等「完整侧在窗口外/已烧没区」的
@@ -424,11 +427,13 @@ function runFlame(
       }
     }
 
-    // 2) 燃烧带注入（写入 dst）：每个火焰场列经 colMap 找到对应 mask 列，在该列的**燃烧带**
-    //    （mask alpha 处于过渡区的所有行）注入热值——火焰与侵蚀轨迹完全一致，边缘不漏段。
+    // 2) 燃烧带注入（写入 dst）：按“平滑边缘强度”注入，火焰沿侵蚀轨迹连续成幕（无竖条）。
+    //    不再用二值 bandHas 整列判定——边缘强度已水平平滑，远离边缘的列自然变弱、渐隐，
+    //    整片火焰柔顺衔接，而非一条条孤立的竖条矩形。
     for (let fx = 0; fx < fireW; fx++) {
       const mx = colMap[fx];
-      if (!bandHas[mx]) continue;
+      const es = edgeStr[mx]; // 平滑 0..1：边缘列≈1，远离边缘平滑衰减到 0
+      if (es < 0.02) continue;
       // 火焰成簇 + 逐帧快速闪烁：低频正弦做火舌旺弱交替（不归零→每条燃烧带都出火），
       // 叠加 age 高频项与每帧随机 → 火舌真正“流动/摇曳”，不再僵硬静止。
       const flick = 0.7 + 0.3 * Math.sin(age * 0.02 + fx * 0.6) + 0.12 * (Math.random() - 0.5) * 2;
@@ -436,44 +441,41 @@ function runFlame(
         0.8 +
         0.16 * Math.sin(fx * 0.4 + age * 0.0011) +
         0.1 * Math.sin(fx * 0.9 - age * 0.0008 + 2.0);
-      // 注入热值：下限保护（>=45，所有燃烧带列至少出火），上限 225；偶发 flicker 峰值才到黄
-      const baseHeat = Math.max(45, Math.min(225, Math.round(injectHeat * cluster * flick * (0.75 + Math.random() * 0.25))));
-      const loM = bandLo[mx], hiM = bandHi[mx];
-      for (let my = loM; my <= hiM; my++) {
-        const fy = Math.round((my / rows) * fireH); // 燃烧带行（火焰场坐标）
-        if (fy < 0 || fy >= fireH) continue;
-        const heat = Math.max(55, baseHeat); // 带内保下限，连续出火
+      // 注入热值随边缘强度变化：离边缘越远的列火越弱，火焰连续渐隐（而非生硬竖条）
+      const baseHeat = Math.max(30, Math.min(235, Math.round(injectHeat * es * cluster * flick * (0.75 + Math.random() * 0.25))));
+      const center = burnCenter[mx];
+      const half = burnHalf[mx];
+      const lo = Math.max(0, Math.round(center - half));
+      const hi = Math.min(fireH - 1, Math.round(center + half));
+      for (let fy = lo; fy <= hi; fy++) {
         const idx = fy * fireW + fx;
+        const heat = Math.max(50, baseHeat); // 带内保下限，连续出火
         dst[idx] = Math.max(dst[idx], heat);
         if (fx > 0) dst[idx - 1] = Math.max(dst[idx - 1], Math.round(heat * 0.7));
         if (fx < fireW - 1) dst[idx + 1] = Math.max(dst[idx + 1], Math.round(heat * 0.7));
       }
     }
 
-    // 3) 裁剪：无燃烧带列清零；有燃烧带列保留燃烧带两侧各 flameRows 的火焰带——
-    //    火焰紧贴侵蚀轨迹（燃烧带）并向外舔出，其它区域清零（避免全屏糊火）。
-    const keepMin = new Int16Array(fireW);
-    const keepMax = new Int16Array(fireW);
-    keepMin.fill(-1);
-    keepMax.fill(-1);
+    // 3) 软垂直窗口：以燃烧前沿为中心，带内全亮、向外 smoothstep 羽化淡出。
+    //    替换原“逐列硬裁剪”（那是“竖条矩形”伪影的根因：无燃烧带的列被整列清零，
+    //    而白噪声抖动让哪些列有带变得支离破碎）。burnCenter/edgeStr 已水平平滑，
+    //    现在整片火焰连续柔顺、贴着侵蚀轨迹舔舐，上下两端自然收边、不再出现硬矩形边。
     for (let fx = 0; fx < fireW; fx++) {
       const mx = colMap[fx];
-      if (!bandHas[mx]) continue;
-      const fyLo = Math.round((bandLo[mx] / rows) * fireH);
-      const fyHi = Math.round((bandHi[mx] / rows) * fireH);
-      // 火焰主要向燃烧带外侧（上方/已蚀区）舔出，下方保留更少 → 火舌而非厚片
-      keepMin[fx] = Math.max(0, fyLo - Math.round(flameRows * 0.4));
-      keepMax[fx] = Math.min(fireH - 1, fyHi + flameRows);
-    }
-    for (let x = 0; x < fireW; x++) {
-      const lo = keepMin[x];
-      if (lo < 0) {
-        for (let y = 0; y < fireH; y++) dst[y * fireW + x] = 0;
-        continue;
+      const center = burnCenter[mx];
+      const inner = burnHalf[mx] + 1;        // 带内（全亮）
+      const outer = inner + flameRows;        // 羽化到 0 的外缘
+      const span = Math.max(1, outer - inner);
+      for (let fy = 0; fy < fireH; fy++) {
+        const d = Math.abs(fy - center);
+        let wnd = 1;
+        if (d > inner) {
+          const t = (d - inner) / span;
+          wnd = t >= 1 ? 0 : 1 - t * t * (3 - 2 * t); // smoothstep 羽化
+        }
+        const idx = fy * fireW + fx;
+        dst[idx] = (dst[idx] * wnd) | 0;
       }
-      const hi = keepMax[x];
-      for (let y = 0; y < lo; y++) dst[y * fireW + x] = 0;
-      for (let y = hi + 1; y < fireH; y++) dst[y * fireW + x] = 0;
     }
 
     // 4) 调色板映射 → ImageData（带半透明：热值低处透出背景；读 dst）
@@ -617,6 +619,36 @@ function runFlame(
   const bandLo = new Int16Array(mw);   // 每列燃烧带起始行（mask 行），无则保持 -1
   const bandHi = new Int16Array(mw);   // 每列燃烧带结束行
   const bandHas = new Uint8Array(mw);  // 每列是否有燃烧带
+  const burnCenter = new Float32Array(mw); // 每列燃烧前沿中心（火焰场行）
+  const burnHalf = new Float32Array(mw);   // 每列燃烧带半高（火焰场行）
+  const edgeStr = new Float32Array(mw);    // 每列边缘强度（平滑 0..1，根除竖条伪影）
+  // 水平盒状模糊：把逐列数值打成连续过渡（fillNeg 时先以邻居均值填补 -1 哨兵）
+  const hblur = (arr: Float32Array, r: number, fillNeg = false): void => {
+    const n = arr.length;
+    if (fillNeg) {
+      let last = 0;
+      for (let i = 0; i < n; i++) {
+        if (arr[i] >= 0) last = arr[i];
+        else arr[i] = last;
+      }
+      for (let i = n - 1; i >= 0; i--) {
+        if (arr[i] < 0) arr[i] = last;
+        else last = arr[i];
+      }
+    }
+    const tmp = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let s = 0, c = 0;
+      for (let jx = i - r; jx <= i + r; jx++) {
+        if (jx >= 0 && jx < n) {
+          s += arr[jx];
+          c++;
+        }
+      }
+      tmp[i] = c ? s / c : 0;
+    }
+    arr.set(tmp);
+  };
   const computeFlameField = (): void => {
     const cols = mw, rows = mh;
     for (let x = 0; x < cols; x++) {
@@ -632,10 +664,20 @@ function runFlame(
         bandLo[x] = lo;
         bandHi[x] = hi;
         bandHas[x] = 1;
+        burnCenter[x] = ((lo + hi) * 0.5 / rows) * fireH;
+        burnHalf[x] = Math.max(2, ((hi - lo) * 0.5 / rows) * fireH);
+        edgeStr[x] = 1;
       } else {
         bandHas[x] = 0;
+        edgeStr[x] = 0;
+        burnCenter[x] = -1;
+        burnHalf[x] = 0;
       }
     }
+    // 水平平滑：把二值边缘强度与前沿中心打成连续 0..1，根除“竖条/矩形”伪影
+    hblur(edgeStr, 4);
+    hblur(burnCenter, 4, true);
+    hblur(burnHalf, 4);
   };
 
 
