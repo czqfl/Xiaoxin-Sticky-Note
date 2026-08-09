@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>粒子消散轨迹对齐演示 · Aligned Dissolve</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d1117; color: #c9d1d9;
+    font-family: system-ui, "Segoe UI", "PingFang SC", sans-serif; overflow: hidden; }
+  #wrap { position: fixed; inset: 0; display: flex; flex-direction: column; }
+  #bar { padding: 10px 14px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    background: #161b22; border-bottom: 1px solid #30363d; }
+  button { background: #238636; color: #fff; border: 0; border-radius: 6px; padding: 7px 12px;
+    font-size: 13px; cursor: pointer; }
+  button.sec { background: #21262d; border: 1px solid #30363d; }
+  button:active { transform: translateY(1px); }
+  button.active { outline: 2px solid #58a6ff; }
+  label { font-size: 13px; display: flex; align-items: center; gap: 6px; }
+  #info { flex: 1; font-size: 12.5px; color: #8b949e; text-align: right; line-height: 1.4; }
+  canvas { display: block; flex: 1; width: 100%; }
+  .tag { font-weight: 700; }
+  .ok { color: #3fb950; } .bad { color: #f85149; }
+  .hint { font-size: 11.5px; color: #6e7681; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="bar">
+    <button id="btnAligned" class="sec active">对齐模式（修正）</button>
+    <button id="btnBuggy" class="sec">偏移模式（原问题）</button>
+    <label>固定偏移 <input id="off" type="range" min="0" max="600" value="260" style="width:120px"> <span id="offv">260</span> ms</label>
+    <button id="btnRestart" class="sec">重播</button>
+    <div id="info"></div>
+  </div>
+  <canvas id="cv"></canvas>
+</div>
+<script>
+/*
+ * 对齐原理（单一真相源）：
+ *   dissolveTimeAt(x, y)  —— 唯一的时间-空间轨迹函数：
+ *     给定便签上的任意点 (x,y)，返回该点"被消散"的时刻（ms）。
+ *   便签的"消散轨迹"（mask 擦除前沿）与粒子的"生成轨迹"（出生点/时刻）
+ *   都由这同一个函数驱动：
+ *     - 离屏擦除：t 时刻，所有满足  t >= dissolveTimeAt(x,y)  的格子已消失；
+ *     - 粒子生成：某格子在  t == dissolveTimeAt(x,y)  这一刻、在该格子坐标处
+ *       恰好生成一粒粒子。
+ *   因为"出生位置 = 消散位置"、"出生时刻 = 消散时刻"，两者由同一函数生成，
+ *   所以不可能出现任何常数（固定）偏移 —— 这就是消除"固定间距"的核心。
+ *
+ * 偏移模式（演示原 bug）：
+ *   粒子被人为提前 offMs 生成、并整体平移 (offVec) —— 模拟应用中
+ *   mask 与粒子层使用两套独立坐标/DPR 变换导致的常数差距。
+ */
+(function () {
+  const cv = document.getElementById('cv');
+  const ctx = cv.getContext('2d');
+  const info = document.getElementById('info');
+  const offInput = document.getElementById('off');
+  const offv = document.getElementById('offv');
+  const btnAligned = document.getElementById('btnAligned');
+  const btnBuggy = document.getElementById('btnBuggy');
+  const btnRestart = document.getElementById('btnRestart');
+
+  let DPR = Math.min(window.devicePixelRatio || 1, 2);
+  const W = 560, H = 380, cell = 5;          // 便签尺寸 + 网格粒度
+  let cols, rows;
+  let cellT = null;       // 每格消散时刻（ms）—— 消散轨迹
+  let cellColor = null;   // 每格主题色
+  let spawned = null;     // 每格是否已生成粒子
+  let regions = [];
+  const DUR = 4200, WIPE = 2500, FEATHER = 90;  // 总时长 / 主体消散窗口 / 羽化带宽
+  let mode = 'aligned';
+  let offMs = 0;
+
+  let tNow = 0, lastTs = 0, playing = true;
+
+  // ---- 粒子池（SoA + swap-remove）----
+  const MAXP = 4000;
+  const px = new Float32Array(MAXP), py = new Float32Array(MAXP);
+  const ppx = new Float32Array(MAXP), ppy = new Float32Array(MAXP);
+  const pvx = new Float32Array(MAXP), pvy = new Float32Array(MAXP);
+  const psw = new Float32Array(MAXP), pseed = new Float32Array(MAXP);
+  const plife = new Float32Array(MAXP), pt = new Float32Array(MAXP);
+  const pr = new Float32Array(MAXP), pg = new Float32Array(MAXP), pb = new Float32Array(MAXP);
+  let pcount = 0;
+
+  // ---- 单一轨迹函数：方向性扩张（上快下慢）+ 幂函数前沿，多个起爆点取 min ----
+  function buildRegions() {
+    regions = [];
+    const mk = (x, y, t0, scale) => ({ x, y, t0, scale: scale || (1.1 + Math.random() * 0.25) });
+    // 首批：下 1/3 一点 + 距其最远点（与真实 app 的"贪心最远点"思路一致）
+    regions.push(mk(Math.random() * W, H * (0.78 + Math.random() * 0.18), Math.random() * 40));
+    let best = null, bd = -1;
+    for (let k = 0; k < 80; k++) {
+      const x = Math.random() * W, y = Math.random() * H;
+      let md = 1e9;
+      for (const r of regions) {
+        const d = Math.hypot(x - r.x, (y - r.y) < 0 ? (y - r.y) * 0.4 : (y - r.y) * 1.8);
+        if (d < md) md = d;
+      }
+      if (md > bd) { bd = md; best = { x, y }; }
+    }
+    regions.push(mk(best.x, best.y, Math.random() * 40));
+    // 第二批 ~43%、第三批 ~74%（分批、有层次）
+    regions.push(mk(Math.random() * W, H * (0.3 + Math.random() * 0.25), DUR * 0.43 + (Math.random() * 2 - 1) * 60));
+    regions.push(mk(Math.random() * W, H * (0.4 + Math.random() * 0.3), DUR * 0.74 + (Math.random() * 2 - 1) * 70));
+  }
+
+  function dissolveTimeAt(x, y) {
+    let best = Infinity;
+    for (const r of regions) {
+      const dx = x - r.x, dy = y - r.y;
+      const eff = Math.hypot(dx, dy < 0 ? dy * 0.4 : dy * 1.8);   // 上×0.4（快）下×1.8（慢）
+      const T = r.t0 + Math.pow(eff / Math.hypot(W, H), 0.7) * WIPE * r.scale; // 幂 0.7：先慢后快
+      if (T < best) best = T;
+    }
+    let T = best;
+    if (T < 0) T = 0; else if (T > DUR - FEATHER) T = DUR - FEATHER;
+    return T;
+  }
+
+  function buildField() {
+    cols = Math.ceil(W / cell); rows = Math.ceil(H / cell);
+    const n = cols * rows;
+    cellT = new Float32Array(n);
+    cellColor = new Float32Array(n * 3);
+    spawned = new Uint8Array(n);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const x = c * cell + cell / 2, y = r * cell + cell / 2;
+      let rr, gg, bb;
+      rr = Math.round(60 + 120 * (x / W));
+      gg = Math.round(90 + 90 * (y / H));
+      bb = Math.round(140 + 80 * (1 - x / W));
+      if (x > W * 0.62 && y > H * 0.55) { rr = 230; gg = 120; bb = 80; }   // 橙块
+      if (x < W * 0.3 && y < H * 0.4) { rr = 90; gg = 180; bb = 220; }    // 蓝块
+      const idx = r * cols + c;
+      cellColor[idx * 3] = rr; cellColor[idx * 3 + 1] = gg; cellColor[idx * 3 + 2] = bb;
+      cellT[idx] = dissolveTimeAt(x, y);
+    }
+  }
+
+  function resize() {
+    const rect = cv.getBoundingClientRect();
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    cv.width = Math.max(1, Math.round(rect.width * DPR));
+    cv.height = Math.max(1, Math.round(rect.height * DPR));
+  }
+
+  function reset() {
+    buildRegions(); buildField();
+    pcount = 0; tNow = 0; lastTs = 0; playing = true;
+    for (let i = 0; i < spawned.length; i++) spawned[i] = 0;
+  }
+
+  function spawnParticle(x, y, cr, cg, cb) {
+    if (pcount >= MAXP) return;
+    const i = pcount++;
+    px[i] = x; py[i] = y; ppx[i] = x; ppy[i] = y;
+    const sp = 30 + Math.random() * 40;
+    pvy[i] = -sp;                                   // 基础向上
+    pvx[i] = (Math.random() - 0.5) * 30;
+    psw[i] = (Math.random() - 0.5) * 40;
+    pseed[i] = Math.random() * 6.28;
+    plife[i] = 1300 + Math.random() * 900;
+    pt[i] = 0;
+    pr[i] = cr / 255; pg[i] = cg / 255; pb[i] = cb / 255;
+  }
+
+  function step(ts) {
+    if (!lastTs) lastTs = ts;
+    let dt = (ts - lastTs) / 1000; lastTs = ts;
+    if (dt > 0.05) dt = 0.05;
+    if (playing) tNow += dt * 1000;
+
+    const offVecX = mode === 'buggy' ? offMs * 0.03 : 0;   // 偏移模式：常数空间平移
+    const offVecY = mode === 'buggy' ? offMs * 0.02 : 0;
+    // 对齐：出生时刻 == 消散时刻；偏移：提前 offMs 生成
+    const dueAt = mode === 'buggy' ? (T) => tNow >= T - offMs : (T) => tNow >= T;
+
+    if (playing) {
+      for (let idx = 0; idx < spawned.length; idx++) {
+        if (spawned[idx]) continue;
+        if (dueAt(cellT[idx])) {
+          spawned[idx] = 1;
+          const c = idx % cols, r = (idx / cols) | 0;
+          spawnParticle(c * cell + cell / 2 + offVecX, r * cell + cell / 2 + offVecY,
+            cellColor[idx * 3], cellColor[idx * 3 + 1], cellColor[idx * 3 + 2]);
+        }
+      }
+    }
+
+    for (let i = 0; i < pcount; i++) {
+      const u = pt[i] + dt * 1000; pt[i] = u;
+      if (u >= plife[i]) {
+        const last = --pcount;
+        if (i !== last) {
+          px[i] = px[last]; py[i] = py[last]; ppx[i] = ppx[last]; ppy[i] = ppy[last];
+          pvx[i] = pvx[last]; pvy[i] = pvy[last]; psw[i] = psw[last]; pseed[i] = pseed[last];
+          plife[i] = plife[last]; pt[i] = pt[last];
+          pr[i] = pr[last]; pg[i] = pg[last]; pb[i] = pb[last];
+        }
+        i--; continue;
+      }
+      ppx[i] = px[i]; ppy[i] = py[i];
+      pvy[i] -= 140 * dt;                              // 向上加速
+      const sway = Math.sin(u * 0.004 + pseed[i]) * 40;
+      px[i] += (pvx[i] + sway) * dt;
+      py[i] += pvy[i] * dt;
+    }
+
+    draw();
+    requestAnimationFrame(step);
+  }
+
+  function draw() {
+    const rect = cv.getBoundingClientRect();
+    const cw = rect.width, ch = rect.height;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.clearRect(0, 0, cw, ch);
+    const ox = Math.round((cw - W) / 2), oy = Math.round((ch - H) / 2);
+
+    // —— 便签本体 + 消散前沿（mask 擦除）——
+    ctx.save();
+    ctx.translate(ox, oy);
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
+      const idx = r * cols + c;
+      const local = tNow - cellT[idx];
+      let a;
+      if (local < 0) a = 1; else if (local > FEATHER) a = 0; else a = 1 - local / FEATHER;
+      if (a <= 0) continue;
+      ctx.globalAlpha = a;
+      ctx.fillStyle = 'rgb(' + cellColor[idx * 3] + ',' + cellColor[idx * 3 + 1] + ',' + cellColor[idx * 3 + 2] + ')';
+      ctx.fillRect(c * cell, r * cell, cell + 0.6, cell + 0.6);
+      if (a < 1) { // 正在消散的前沿
+        ctx.globalAlpha = Math.min(1, (1 - a)) * 0.9;
+        ctx.fillStyle = mode === 'aligned' ? 'rgba(80,220,255,1)' : 'rgba(255,90,90,1)';
+        ctx.fillRect(c * cell, r * cell, cell + 0.6, cell + 0.6);
+      }
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+
+    // —— 粒子（additive，轨迹用线段连接上一帧 → 体现连续运动轨迹）——
+    ctx.save();
+    ctx.translate(ox, oy);
+    ctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < pcount; i++) {
+      const u = pt[i] / plife[i];
+      const alpha = (1 - u) * Math.pow(1 - u, 0.2);
+      if (alpha < 0.02) continue;
+      const col = (pr[i] * 255 | 0) + ',' + (pg[i] * 255 | 0) + ',' + (pb[i] * 255 | 0);
+      ctx.strokeStyle = 'rgba(' + col + ',' + (alpha * 0.5) + ')';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath(); ctx.moveTo(ppx[i], ppy[i]); ctx.lineTo(px[i], py[i]); ctx.stroke();
+      ctx.fillStyle = 'rgba(' + col + ',' + alpha + ')';
+      ctx.beginPath(); ctx.arc(px[i], py[i], 2.4, 0, 6.283); ctx.fill();
+    }
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.restore();
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.strokeRect(ox, oy, W, H);
+
+    info.innerHTML = mode === 'aligned'
+      ? '<span class="tag ok">对齐模式</span> 粒子生成点 = 消散前沿（位置与时刻完全一致，单一轨迹函数驱动，无间距）'
+      : '<span class="tag bad">偏移模式</span> 粒子提前 ' + offMs + 'ms 且整体平移 ' + (offMs * 0.03 | 0) + ',' + (offMs * 0.02 | 0) + 'px → 与消散前沿存在固定间距';
+  }
+
+  btnAligned.onclick = () => {
+    mode = 'aligned'; offInput.value = 0; offv.textContent = '0';
+    btnAligned.classList.add('active'); btnBuggy.classList.remove('active'); reset();
+  };
+  btnBuggy.onclick = () => {
+    mode = 'buggy'; offInput.value = 260; offv.textContent = '260';
+    btnBuggy.classList.add('active'); btnAligned.classList.remove('active'); reset();
+  };
+  offInput.oninput = () => {
+    offv.textContent = offInput.value; offMs = +offInput.value;
+    if (mode === 'aligned') { mode = 'buggy'; btnBuggy.classList.add('active'); btnAligned.classList.remove('active'); }
+  };
+  btnRestart.onclick = () => reset();
+  window.addEventListener('resize', resize);
+
+  resize(); reset(); requestAnimationFrame(step);
+})();
+</script>
+</body>
+</html>
