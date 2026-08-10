@@ -97,6 +97,21 @@ export function bumpGlowGen(): void {
   glowGen++;
 }
 
+/** 获取本（便签）窗口的屏幕位置（物理 px）。Tauri 的 outerPosition() 偶发失败时重试；
+ *  仍拿不到返回 null —— 调用方必须回退 self 模式，绝不能带 (0,0) 偏移让粒子错位生成。 */
+async function getNoteWindowPos(): Promise<{ x: number; y: number } | null> {
+  for (let i = 0; i < 3; i++) {
+    try {
+      const p = await getCurrentWindow().outerPosition();
+      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) return { x: p.x, y: p.y };
+    } catch {
+      /* 下一轮重试 */
+    }
+    if (i < 2) await new Promise((r) => window.setTimeout(r, 16));
+  }
+  return null;
+}
+
 /** 请求播放「粒子光效消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。
  * remote = true 时：本窗口只播放 mask 消散，粒子交给全屏透明粒子层窗口渲染
  * （粒子可飘出便签矩形边界、在整个屏幕自由飘散）。 */
@@ -157,10 +172,14 @@ export function requestGlowDissolveClose(
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         const [field, pos] = await Promise.all([
           buildColorField(root, w, h),
-          getCurrentWindow().outerPosition().catch(() => null),
+          getNoteWindowPos(), // outerPosition 失败会重试；拿不到直接回退 self（见下）
         ]);
-        layerField = field;
-        if (pos) {
+        if (!pos) {
+          // 拿不到便签屏幕位置：绝不能带 (0,0) 偏移让粒子生成在屏幕左上角（完全错位）→
+          // 回退 self 模式（粒子画在便签窗口内，与 mask 天然同坐标、零偏移）。
+          useRemote = false;
+        } else {
+          layerField = field;
           layerOrigin.x = pos.x / dpr;
           layerOrigin.y = pos.y / dpr;
         }

@@ -162,7 +162,7 @@ function stopLayer(): void {
 }
 
 // ---- 各模式的初始化 ----
-function buildEmitGrid(p: ParticleLayerStart): void {
+function buildEmitGrid(p: ParticleLayerStart): boolean {
   originX = p.originX;
   originY = p.originY;
   rectW = Math.max(1, p.width);
@@ -186,9 +186,25 @@ function buildEmitGrid(p: ParticleLayerStart): void {
   binPts = bins.length ? bins.map((b) => b.slice()) : [[]];
   maxEmitT = 0;
   for (let i = 0; i < ecount; i++) if (emitT[i] > maxEmitT) maxEmitT = emitT[i];
+  // 防御校验：发射网格应覆盖便签矩形（origin → origin+size）的屏幕区域。若便签侧 origin
+  // 获取异常退化为 (0,0)，网格会整体落在屏幕左上角（与便签完全错位）→ 拒收本次动画，
+  // 保持空画面，等待便签侧回退 self 模式（粒子画在便签窗口内，零偏移）。
+  if (ecount > 0 && (originX > 4 || originY > 4)) {
+    let minX = Infinity;
+    let minY = Infinity;
+    for (let i = 0; i < ecount; i++) {
+      if (emitX[i] < minX) minX = emitX[i];
+      if (emitY[i] < minY) minY = emitY[i];
+    }
+    if (minX < originX - 2 || minY < originY - 2) {
+      console.warn("[particles-layer] 发射网格与窗口 origin 不匹配，拒收本次动画");
+      return false;
+    }
+  }
   const peakAlive = Math.round(ecount * (0.03 + 0.97 * layerDensity / 100));
   ensurePool(peakAlive + 1500);
   pcount = 0;
+  return true;
 }
 
 const frame = (now: number): void => {
@@ -282,23 +298,61 @@ const frame = (now: number): void => {
   }
 };
 
+/** 校准粒子层窗口几何：锚定屏幕左上角 (0,0) 并铺满整屏，同时同步 canvas 缓冲尺寸。
+ *  mount 时（app 启动、窗口尚未初始化完成）setSize/setPosition 可能静默失败，窗口会保持
+ *  tauri.conf.json 的固定尺寸（1920×1080）→ 粒子屏幕坐标与窗口几何错位（压缩/偏移/不可见）。
+ *  每次动画开始前重新校准，确保粒子屏幕坐标与窗口严格一致。 */
+async function calibrateLayerWindow(): Promise<void> {
+  const win = getCurrentWindow();
+  const ww = Math.round(window.screen.width || window.innerWidth || 1920);
+  const hh = Math.round(window.screen.height || window.innerHeight || 1080);
+  await win.setPosition(new LogicalPosition(0, 0)).catch(() => {});
+  await win.setSize(new LogicalSize(ww, hh)).catch(() => {});
+  const pw = Math.max(1, Math.round(ww * dpr));
+  const ph = Math.max(1, Math.round(hh * dpr));
+  if (canvas && (canvas.width !== pw || canvas.height !== ph)) {
+    // canvas 尺寸变更会重置 WebGL context → 重建 GL 基础设施（program/buffer/attrib）
+    canvas.width = pw;
+    canvas.height = ph;
+    gl = null;
+    buf = null;
+    aPosLoc = 0;
+    aParamLoc = 0;
+    aColorLoc = 0;
+    if (!setupGL()) {
+      console.error("粒子层 WebGL 重建失败");
+    }
+  }
+}
+
 const step = (now: number): void => {
   frame(now);
   if (!layerEnded) rafId = requestAnimationFrame(step);
 };
 
-function startLayer(p: ParticleLayerStart): void {
+async function startLayer(p: ParticleLayerStart): Promise<void> {
   layerKind = p.type || "particle";
   // startAt 是便签窗口用 Date.now()（系统时钟）记录的动画开始时刻：本窗口也必须用
   // Date.now() 计算 age（见 frame），跨窗口同步不受 performance.now() 时间原点差异影响。
   layerStartAt = p.startAt ?? Date.now();
   layerDensity = Math.max(0, Math.min(100, p.density ?? 50));
   k = Math.max(0.25, Math.min(4, 100 / Math.max(10, p.speed ?? 100)));
-  buildEmitGrid(p);
+  if (!buildEmitGrid(p)) {
+    // 发射网格与窗口 origin 不匹配（便签侧 origin 获取异常退化为 (0,0)）→ 拒收本次动画，
+    // 保持空画面并隐藏窗口，避免粒子在便签之外的位置生成（完全错位）。
+    layerEnded = true;
+    layerActive = false;
+    getCurrentWindow().hide().catch(() => {});
+    return;
+  }
   duration = Math.round(4800 * k); // 与便签侧消散总时长保持一致（glow-particles.ts 的 duration），避免粒子在消散途中被提前截断
   layerEnded = false;
   layerActive = true;
   started = false;
+  // 校准窗口几何（幂等）：mount 时 setSize 可能失败导致窗口不是全屏 → 粒子错位/压缩。
+  // 校准完成后才开始渲染（粒子层窗口已由便签侧提前 show，透明无感）。
+  await calibrateLayerWindow();
+  if (layerEnded) return;
   getCurrentWindow().show().catch(() => {});
   rafId = requestAnimationFrame(step);
   backupId = window.setInterval(() => {
