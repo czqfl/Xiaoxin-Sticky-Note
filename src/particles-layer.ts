@@ -142,9 +142,9 @@ const spawn = (inst: PAnim, sx: number, sy: number, age: number): void => {
   inst.px[i] = sx;   // 物理 px（屏幕）
   inst.py[i] = sy;
   inst.pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // ±55°
-  // —— 增强飘动：放慢直线飞射（速度包络走缓），给摆动让出视觉空间 ——
-  inst.pv0[i] = (4 + Math.random() * 7) * inst.noteDpr; // 初速 4~11 px/s（原 6~18，再放慢上升）
-  inst.pv1[i] = 90 * inst.noteDpr;                       // 加速度 90 px/s²（原 190，慢速漂浮上升）
+  // —— 增强飘动：粒子上升速度要快于「新点前沿向上扩散」形成重叠纵深 ——
+  inst.pv0[i] = (20 + Math.random() * 15) * inst.noteDpr; // 初速 20~35 px/s（适中起飘）
+  inst.pv1[i] = 150 * inst.noteDpr;                        // 加速度 150 px/s²（中等上浮，快于前沿）
   inst.plife[i] = life;
   inst.page[i] = 0;
   inst.psize[i] = 1.9 + Math.random() * 0.7;              // 尺寸 1.9~2.6（原固定 1.8，微增且带随机）

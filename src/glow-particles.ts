@@ -406,7 +406,6 @@ function runGlow(
 
   // ---- 时序参数（整体 ~2.4s：主体消散 1400ms + 透明度淡出收尾）
   const wipe = Math.round(1400 * k); // 主体消散窗口 ms
-  const secondBatchAt = Math.round(960 * k); // 第二批区域在动画 ~40% 时起爆
   const duration = Math.round(2400 * k); // 总时长（后半段透明度淡出代替铺满全窗）
 
   // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）。
@@ -534,14 +533,9 @@ function runGlow(
     return toGlowColor(field.data[idx], field.data[idx + 1], field.data[idx + 2]);
   };
 
-  // ---- 消散时间场 T(x,y)：上中下三部分限制起爆 ----
-  // 便签竖向三等分：
-  // - 下 1/3：必须随机某点发起消散（~0ms 起爆）
-  // - 中 1/3：必发 1 点（动画 ~40% 时起爆）
-  // - 上 1/3：随机从左侧 / 右侧 / 上侧边缘发起消散（~0ms 起爆）
-  // - 下/上各 35% 概率补充 1 点（~40% 时起爆）→ 每次 3~5 个起爆点
-  // 方向性扩张速度：往上消散 > 左右消散 > 往下消散（等效距离 上×0.4/左右×1.0/下×1.8）
-  // 幂函数蔓延 0.7：前沿先慢后快；花瓣状角度调制 → 扩散形状不规则（非圆形）
+  // ---- 消散时间场 T(x,y)：多点发起 + 恒定速度（红龙切式层次感）----
+  // 详见下方实现：初始 1~2 点，20%~30% / 50%~60% 在「剩余最大未消散区域」新增起始点，
+  // 前沿匀速扩散，粒子上升快于前沿 → 重叠纵深。
   const featherMs = Math.round(70 * k); // 羽化软边时间带宽
   const maskScale = Math.max(0.18, Math.min(0.32, 120 / Math.max(w, 1))); // 目标宽 ~120px
   const mw = Math.max(8, Math.round(w * maskScale));
@@ -557,37 +551,26 @@ function runGlow(
   const mimg = mctx.createImageData(mw, mh);
   const mpx32 = new Uint32Array(mimg.data.buffer); // 32 位写入，仅改最高字节(alpha)
 
-  // 区域生成（每次播放重新生成 → 每次观感不同）
+  // ---- 多点发起 + 恒定速度的消散时间场 ----
+  // 机制（对齐「红龙切」式层次感）：
+  // 1) t=0 初始 1~2 个起始点；
+  // 2) 动画 ~20%~30% 与 ~50%~60% 时，在「剩余最大未消散区域」新增起始点
+  //    （贪心最远点采样：取当前 T 场下到激活时刻还能撑最久的像素 = 最深剩余区域中心）；
+  // 3) 各点前沿**匀速**扩散（线性时间-距离，去掉 pow 加速曲线 → 整体消散速度恒定）；
+  // 4) 向上扩散略慢（等效距离 ×1.8）+ 粒子上升速度高于前沿 → 粒子穿过未消散区域，
+  //    形成错落、重叠的空间立体感。
   const diag = Math.hypot(w, h);
   interface DissolveRegion { x: number; y: number; t0: number; scale: number }
   const regions: DissolveRegion[] = [];
+  // 匀速扩散系数：越大前沿越慢（粒子相对更容易超过前沿 → 重叠越明显）
+  const kSpread = 1.6;
+  const noisePhase = Math.random() * 100; // 噪声相位随机 → 每次前沿弯曲不同
   const makeRegion = (x: number, y: number, t0: number): DissolveRegion => ({
     x,
     y,
     t0,
-    scale: 1.1 + Math.random() * 0.25,
+    scale: 0.95 + Math.random() * 0.2,
   });
-  // 下 1/3：必须随机某点（首批）
-  regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, Math.random() * 60));
-  // 上 1/3：随机 左 / 右 / 上 侧边缘发起（首批，贴在对应边缘上）
-  const side = Math.random();
-  if (side < 1 / 3) {
-    regions.push(makeRegion(Math.random() * 30, (Math.random() / 3) * h, Math.random() * 60)); // 左侧边
-  } else if (side < 2 / 3) {
-    regions.push(makeRegion(w - Math.random() * 30, (Math.random() / 3) * h, Math.random() * 60)); // 右侧边
-  } else {
-    regions.push(makeRegion(Math.random() * w, Math.random() * 30, Math.random() * 60)); // 上侧边
-  }
-  // 中 1/3：必发 1 点（动画 40% 时起爆）
-  regions.push(makeRegion(Math.random() * w, (1 / 3 + Math.random() / 3) * h, secondBatchAt + Math.random() * 120 - 60));
-  // 补充起爆点（各 35% 概率，动画 40% 时）：下/上部各可能再多 1 点
-  if (Math.random() < 0.35) {
-    regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, secondBatchAt + Math.random() * 120 - 60));
-  }
-  if (Math.random() < 0.35) {
-    regions.push(makeRegion(Math.random() * w, Math.random() * 30, secondBatchAt + Math.random() * 120 - 60));
-  }
-  const noisePhase = Math.random() * 100; // 噪声相位随机 → 每次前沿弯曲不同
 
   // 确定性值噪声
   const hash01 = (n: number): number => {
@@ -616,26 +599,68 @@ function runGlow(
     );
   };
 
-  // 返回 CSS 坐标 (nx,ny) 的消散时刻
+  // 单区域扩散的纯空间距离场（不含噪声；新点选址用，保证"剩余面积最大"判断干净）
+  const spreadEffAt = (nx: number, ny: number, r: DissolveRegion): number => {
+    const dx = nx - r.x;
+    const dy = ny - r.y;
+    // 向上略慢（×1.8：粒子上升更快 → 穿过未消散区）、向下略快（×0.85）
+    let eff = Math.hypot(dx, dy * (dy < 0 ? 1.8 : 0.85));
+    const theta = Math.atan2(dy, dx);
+    // 花瓣状角度调制 → 扩散形状不规则（非圆形）
+    const petal =
+      1 +
+      0.16 * Math.sin(theta * 3 + noisePhase) +
+      0.11 * Math.sin(theta * 5 - noisePhase * 0.7 + 1.9) +
+      0.07 * Math.sin(theta * 7 + noisePhase * 1.3 + 4.1);
+    eff *= Math.max(0.4, petal);
+    return eff;
+  };
+  // 恒定速度：线性时间-距离（dT/dr 恒定 → 前沿匀速推进，不再先慢后快）
+  const regionTimeAt = (nx: number, ny: number, r: DissolveRegion): number =>
+    r.t0 + (spreadEffAt(nx, ny, r) / diag) * wipe * kSpread * r.scale;
+
+  // 初始 1~2 点（t≈0 起爆）：首点在中下部，第二点（50% 概率）在上部
+  regions.push(makeRegion(Math.random() * w, (0.55 + Math.random() * 0.35) * h, Math.random() * 50));
+  if (Math.random() < 0.5) {
+    regions.push(makeRegion(Math.random() * w, Math.random() * 0.4 * h, Math.random() * 50));
+  }
+  // 后续起爆点激活时刻：20%~30% 与 50%~60%
+  const tIgnite2 = wipe * (0.2 + Math.random() * 0.1);
+  const tIgnite3 = wipe * (0.5 + Math.random() * 0.1);
+  // 贪心最远点选址：新增点落在「剩余最大未消散区域」中心——当前 T 场下到 tAct 时刻
+  // 还能撑最久的像素，即距所有前沿最远 = 最深剩余实心区域中心
+  const placeFarthestRegion = (tAct: number): void => {
+    let bestX = w * 0.5;
+    let bestY = h * 0.5;
+    let bestScore = -1;
+    for (let my = 0; my < mh; my++) {
+      const ny = (my + 0.5) / maskScale;
+      for (let mx = 0; mx < mw; mx++) {
+        const nx = (mx + 0.5) / maskScale;
+        let T = Infinity;
+        for (const r of regions) {
+          const ts = regionTimeAt(nx, ny, r);
+          if (ts < T) T = ts;
+        }
+        const score = Math.max(0, T - tAct);
+        if (score > bestScore) {
+          bestScore = score;
+          bestX = nx;
+          bestY = ny;
+        }
+      }
+    }
+    regions.push(makeRegion(bestX, bestY, tAct));
+  };
+  placeFarthestRegion(tIgnite2);
+  placeFarthestRegion(tIgnite3);
+
+  // 返回 CSS 坐标 (nx,ny) 的消散时刻（单一真相源：mask 与粒子发射共用）
   const dissolveTimeAt = (nx: number, ny: number): number => {
     let best = Infinity;
-    for (let i = 0; i < regions.length; i++) {
-      const r = regions[i];
-      const dx = nx - r.x;
-      const dy = ny - r.y;
-      // 方向性扩张：上×0.4（最快）、左右×1.0、下×1.8（最慢）
-      let eff = Math.hypot(dx, dy * (dy < 0 ? 0.4 : 1.8));
-      // 花瓣状角度调制 → 扩散形状不规则（非圆形）
-      const theta = Math.atan2(dy, dx);
-      const petal =
-        1 +
-        0.16 * Math.sin(theta * 3 + noisePhase) +
-        0.11 * Math.sin(theta * 5 - noisePhase * 0.7 + 1.9) +
-        0.07 * Math.sin(theta * 7 + noisePhase * 1.3 + 4.1);
-      eff *= Math.max(0.4, petal);
-      // 幂函数 0.7：dT/dr 随距离递减 → 前沿速度随扩散递增，消散先慢后快
-      const Tsrc = r.t0 + Math.pow(eff / diag, 0.7) * wipe * r.scale;
-      if (Tsrc < best) best = Tsrc;
+    for (const r of regions) {
+      const ts = regionTimeAt(nx, ny, r);
+      if (ts < best) best = ts;
     }
     let T = best + gentleNoise(nx, ny);
     if (T < 0) T = 0;
@@ -769,8 +794,8 @@ function runGlow(
     px[i] = x;
     py[i] = y;
     pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // 随机左右偏转 ±55°
-    pv0[i] = 6 + Math.random() * 10; // 初速度略随机（px/s，缓慢起飘；原 20~60 太快）
-    pv1[i] = 180; // 加速度（px/s²，明显加速但不过快；原 650 在 1s 后 ~700px/s 直线冲走）
+    pv0[i] = 20 + Math.random() * 15; // 初速度（px/s，适中起飘：快于前沿形成重叠纵深；原 6~16 太慢）
+    pv1[i] = 150; // 加速度（px/s²，中等上浮；原 650 直线冲走、180 偏慢）
     plife[i] = life;
     page[i] = 0;
     psize[i] = 1.8; // 亮核 1.8px
