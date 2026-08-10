@@ -537,6 +537,27 @@ async function startLayer(p: ParticleLayerStart): Promise<void> {
   // 校准完成后再开始渲染（粒子层窗口已由便签侧提前 show，透明无感）。
   await calibrateLayerWindow();
   if (layerEnded) return;
+  // ===== 诊断日志（定位粒子错位）=====
+  try {
+    const win = getCurrentWindow();
+    const inner = await win.innerSize().catch(() => null);
+    const outer = await win.outerPosition().catch(() => null);
+    let eminX = Infinity, emaxX = -Infinity, eminY = Infinity, emaxY = -Infinity;
+    for (let i = 0; i < ecount; i++) {
+      if (emitX[i] < eminX) eminX = emitX[i];
+      if (emitX[i] > emaxX) emaxX = emitX[i];
+      if (emitY[i] < eminY) eminY = emitY[i];
+      if (emitY[i] > emaxY) emaxY = emitY[i];
+    }
+    console.log("[PL-DIAG] ===== 粒子层动画启动 =====");
+    console.log("[PL-DIAG] startAt=", layerStartAt, "Date.now=", Date.now(), "age偏移=", Date.now() - layerStartAt);
+    console.log("[PL-DIAG] origin(物理px)=(", originX, ",", originY, ") noteDpr=", noteDpr, "layerDpr=", window.devicePixelRatio);
+    console.log("[PL-DIAG] 便签尺寸(CSS)=", rectW, "x", rectH, " 发射网格范围(物理px)= x[" + eminX.toFixed(0) + ".." + emaxX.toFixed(0) + "] y[" + eminY.toFixed(0) + ".." + emaxY.toFixed(0) + "]");
+    console.log("[PL-DIAG] screen.width/height=", window.screen.width, "x", window.screen.height, " canvas=", canvas?.width, "x", canvas?.height);
+    console.log("[PL-DIAG] 窗口实际 innerSize(物理)=", inner ? (inner.width + "x" + inner.height) : "null", " outerPos=", outer ? ("(" + outer.x + "," + outer.y + ")") : "null");
+    console.log("[PL-DIAG] 粒子层窗口可见?", await win.isVisible().catch(() => "err"));
+  } catch (e) { console.log("[PL-DIAG] 诊断异常", e); }
+  // ===== 诊断结束 =====
   getCurrentWindow().show().catch(() => {});
   rafId = requestAnimationFrame(step);
   backupId = window.setInterval(() => {

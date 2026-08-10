@@ -171,6 +171,7 @@ export function requestGlowDissolveClose(
         if (!pos) {
           // 拿不到便签屏幕位置：绝不能带 (0,0) 偏移让粒子生成在屏幕左上角（完全错位）→
           // 回退 self 模式（粒子画在便签窗口内，与 mask 天然同坐标、零偏移）。
+          console.log("[GP-DIAG] outerPosition 失败 → 回退 self 模式");
           useRemote = false;
         } else {
           layerField = field;
@@ -178,6 +179,7 @@ export function requestGlowDissolveClose(
           // 便签局部 CSS px × resp + origin(物理) = 屏幕物理 px，与缩放解耦。
           layerOrigin.x = pos.x;
           layerOrigin.y = pos.y;
+          console.log("[GP-DIAG] 便签 outerPos(物理)=(" + pos.x + "," + pos.y + ") noteDpr=" + noteDpr + " innerSize=" + w + "x" + h + " useRemote=" + useRemote);
         }
       }
       if (aborted) return;
