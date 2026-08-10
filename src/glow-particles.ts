@@ -925,15 +925,18 @@ function runGlow(
         // 慢速漂浮上升 + 多频强摆动（与 remote 粒子层同一套运动模型，观感一致）：
         // 速度包络走缓避免直线冲走；横向三频正弦叠加出复杂曲线路径，纵向起伏漂浮。
         const aSec = a / 1000;
-        const spdRamp = Math.min(1, aSec / 0.9);
-        const speed = (pv0[i] + pv1[i] * spdRamp) * (1 + 0.3 * Math.sin(a * 0.0021 + pseed[i] * 3));
+        // 被风轻轻吹走的飘速曲线（与 remote 粒子层同款）：前期快速起飘、后期缓慢回落
+        const tLife = life / 1000;
+        const rise = 1 - Math.exp(-aSec / 0.3);
+        const ease = 1 - 0.3 * Math.min(1, aSec / Math.max(0.6, tLife));
+        const speed = (pv0[i] + pv1[i] * rise * ease) * (1 + 0.3 * Math.sin(a * 0.0021 + pseed[i] * 3));
         const dx = Math.sin(pang[i]);
         const dy = -Math.cos(pang[i]); // 向上为负 y
         const s1 = Math.sin(a * 0.0025 + pseed[i]) * 85;
         const s2 = Math.sin(a * 0.009 + pseed[i] * 2.3) * 55;
         const s3 = Math.sin(a * 0.024 + pseed[i] * 4.1) * 20;
         const swayX = psway[i] + s1 + s2 + s3 + windPx; // 整体风偏：粒子朝（左/右）上飘
-        const bobY = Math.sin(a * 0.0062 + pseed[i] * 1.7) * 55 * (0.35 + 0.65 * spdRamp);
+        const bobY = Math.sin(a * 0.0062 + pseed[i] * 1.7) * 55 * (0.35 + 0.65 * rise);
         px[i] += (dx * speed + swayX) * dt;
         py[i] += (dy * speed + bobY) * dt;
         const t = 1 - u;

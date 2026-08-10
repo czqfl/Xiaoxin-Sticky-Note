@@ -307,9 +307,12 @@ const frame = (now: number): void => {
         continue;
       }
       const aSec = a2 / 1000;
-      // 速度包络：起步缓、中段渐强、后段趋稳——避免直线飞射，让摆动看得见
-      const spdRamp = Math.min(1, aSec / 0.9);
-      const speed = (inst.pv0[i] + inst.pv1[i] * spdRamp) * (1 + 0.3 * Math.sin(a2 * 0.0021 + inst.pseed[i] * 3));
+      // 被风轻轻吹走的飘速曲线：前期快速起飘（指数逼近飘速峰值 → 前期加速度大、起步利落），
+      // 后期目标峰值缓慢回落（≈70%）→ 越飘越轻、不冲，观感轻盈
+      const tLife = life / 1000;
+      const rise = 1 - Math.exp(-aSec / 0.3);
+      const ease = 1 - 0.3 * Math.min(1, aSec / Math.max(0.6, tLife));
+      const speed = (inst.pv0[i] + inst.pv1[i] * rise * ease) * (1 + 0.3 * Math.sin(a2 * 0.0021 + inst.pseed[i] * 3));
       const dx = Math.sin(inst.pang[i]);
       const dy = -Math.cos(inst.pang[i]); // 向上为负 y
       // —— 强飘动：慢漂移 + 中频摆动 + 高频抖动，多频正弦叠加 → 复杂有机曲线路径 ——
@@ -317,8 +320,8 @@ const frame = (now: number): void => {
       const s2 = Math.sin(a2 * 0.009 + inst.pseed[i] * 2.3) * 55 * inst.noteDpr;
       const s3 = Math.sin(a2 * 0.024 + inst.pseed[i] * 4.1) * 20 * inst.noteDpr;
       const swayX = inst.psway[i] + s1 + s2 + s3;
-      // 纵向起伏（漂浮感）：竖直方向也摆动，幅度随年龄渐强
-      const bobY = Math.sin(a2 * 0.0062 + inst.pseed[i] * 1.7) * 55 * inst.noteDpr * (0.35 + 0.65 * spdRamp);
+      // 纵向起伏（漂浮感）：竖直方向也摆动，幅度随起飘进程渐强
+      const bobY = Math.sin(a2 * 0.0062 + inst.pseed[i] * 1.7) * 55 * inst.noteDpr * (0.35 + 0.65 * rise);
       inst.px[i] += (dx * speed + swayX) * dt;
       inst.py[i] += (dy * speed + bobY) * dt;
       const t = 1 - u;
