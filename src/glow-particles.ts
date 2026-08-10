@@ -168,8 +168,20 @@ export function requestGlowDissolveClose(
     try {
       // 本动画序号（粒子层据此忽略过期 cancel——快速呼出/关闭竞态）
       const mySeq = ++lastGlowSeq;
-      // 便签窗口 dpr（物理 px ↔ CSS px 换算）：提到外层供 emit dprNote 使用
-      const noteDpr = Math.min(window.devicePixelRatio || 1, 2);
+      // 便签窗口 dpr（物理 px ↔ CSS px 换算）：优先用「窗口物理宽度/CSS 宽度」比值——
+      // 反映窗口真实缩放（个别 WebView 窗口的 devicePixelRatio 可能未跟随系统缩放，
+      // 用错的 dpr 会让粒子网格按错误比例展开 → 部分区域无粒子/错位）。
+      let noteDpr = Math.min(window.devicePixelRatio || 1, 2);
+      try {
+        const inner = await getCurrentWindow().innerSize();
+        const cssW = window.innerWidth || 1;
+        if (inner.width > 0 && cssW > 0) {
+          const ratio = inner.width / cssW;
+          if (ratio > 0.5 && ratio < 4) noteDpr = ratio;
+        }
+      } catch {
+        /* 保持 devicePixelRatio */
+      }
       // remote：提前并行获取颜色场与窗口位置（emit 不再 await，粒子层与 mask 几乎同步开始）
       let layerField: ColorField | null = null;
       let layerOrigin = { x: 0, y: 0 };
