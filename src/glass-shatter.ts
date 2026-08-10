@@ -1,5 +1,5 @@
-// 便签「玻璃碎裂」关闭动画：便签瞬间碎裂成玻璃碎块（抖动网格三角化），
-// 碎块向四周飞散、自旋、轻微下落，末段整体渐渐淡出（碎裂 → 渐隐）。
+// 便签「玻璃碎裂」关闭动画：便签瞬间碎裂成几大块玻璃（抖动网格三角化），
+// 碎块轻微错开、不旋转、不飞散，末段整体柔和淡出（碎裂 → 渐隐）。
 // ----------------------------------------------------------------------------
 // 触发：关闭窗口时播放（粒子风格 particle_mode = "glass" 时选用）。
 // 呼出时不播放成形动画：直接复原便签显示（见 note.ts summoned 处理 → restoreGlassSummoned）。
@@ -9,7 +9,7 @@
 // - 碎块 = 抖动网格三角化（每格 2 个三角形），颜色采样自便签「区域颜色场」
 //   （复用 glow-particles.ts 的 buildColorField，含背景图 cover 取色）；
 // - 碎块运动：从便签中心向外飞散（外圈更快）+ 空气阻力减速 + 自旋 + 轻微重力 + 末段整体淡出；
-// - 玻璃质感：碎块半透明白描边（碎裂边缘高光）；
+// - 玻璃质感：碎块纯色填充（无描边高光，干净克制）；
 // - 工程契约：rAF + 备份定时器帧驱动（备份路径不得调度 rAF）、看门狗强制收尾、
 //   cancel 停帧+复原页面且不触发 onDone、代次守卫防 cleanupAfterHide 误裁新呼出的便签。
 
@@ -177,15 +177,17 @@ function runGlass(
   };
 
   // ---- 碎块生成：抖动网格三角化（每格 2 个三角形 = 2 块玻璃）----
-  // 密度越高格子越小、碎块越多（46~96px 格子）；碎块颜色 = 质心处便签表面颜色
-  const cell = Math.max(46, 96 - 40 * density);
+  // 碎块更大更少（96~170px 格子，密度越高越碎，但仍是整块玻璃感）；
+  // 碎块颜色 = 质心处便签表面颜色
+  const cell = Math.max(96, 170 - 70 * density);
   const cols = Math.max(4, Math.round(w / cell));
   const rows = Math.max(3, Math.round(h / cell));
   const gw = w / cols, gh = h / rows;
   interface Shard {
     ax: number; ay: number; bx: number; by: number; cx2: number; cy2: number;
-    cx: number; cy: number; // 质心（= 当前绘制位置）
-    vx: number; vy: number; vr: number; rot: number;
+    ox: number; oy: number; // 初始质心（碎块绘制位置从它偏移）
+    cx: number; cy: number; // 当前质心
+    vx: number; vy: number;
   }
   const shards: Shard[] = [];
   const vx = new Float32Array((cols + 1) * (rows + 1));
@@ -193,9 +195,9 @@ function runGlass(
   for (let j = 0; j <= rows; j++) {
     for (let i = 0; i <= cols; i++) {
       const idx = j * (cols + 1) + i;
-      // 内部顶点抖动（±35% 格宽）→ 碎裂不规则；边缘顶点不抖（保持外轮廓）
-      const jx = (i === 0 || i === cols) ? 0 : (Math.random() - 0.5) * gw * 0.7;
-      const jy = (j === 0 || j === rows) ? 0 : (Math.random() - 0.5) * gh * 0.7;
+      // 内部顶点轻微抖动（±20% 格宽）→ 裂痕自然；边缘顶点不抖（保持外轮廓）
+      const jx = (i === 0 || i === cols) ? 0 : (Math.random() - 0.5) * gw * 0.4;
+      const jy = (j === 0 || j === rows) ? 0 : (Math.random() - 0.5) * gh * 0.4;
       vx[idx] = i * gw + jx;
       vy[idx] = j * gh + jy;
     }
@@ -204,17 +206,15 @@ function runGlass(
   const pushTri = (a: number, b: number, c: number): void => {
     const ax = vx[a], ay = vy[a], bx = vx[b], by = vy[b], cx2 = vx[c], cy2 = vy[c];
     const cx = (ax + bx + cx2) / 3, cy = (ay + by + cy2) / 3;
-    // 从便签中心向外飞散：外圈更快；方向加随机切向抖动
+    // 从便签中心轻微错开：速度小、方向带轻微随机；不旋转
     const dx = cx - w / 2, dy = cy - h / 2;
     const dist = Math.hypot(dx, dy) || 1;
-    const speedBase = (26 + Math.random() * 80) * (0.55 + 0.95 * Math.min(1, dist / halfDiag));
-    const jitter = (Math.random() - 0.5) * 0.8;
+    const speedBase = (6 + Math.random() * 22) * (0.6 + 0.5 * Math.min(1, dist / halfDiag));
+    const jitter = (Math.random() - 0.5) * 0.5;
     shards.push({
-      ax, ay, bx, by, cx2, cy2, cx, cy,
+      ax, ay, bx, by, cx2, cy2, ox: cx, oy: cy, cx, cy,
       vx: (dx / dist) * speedBase + (-dy / dist) * jitter * speedBase,
       vy: (dy / dist) * speedBase + (dx / dist) * jitter * speedBase,
-      vr: (Math.random() - 0.5) * 5.5, // 自旋
-      rot: Math.random() * Math.PI * 2,
     });
   };
   for (let j = 0; j < rows; j++) {
@@ -288,37 +288,32 @@ function runGlass(
     lastPaint = now;
 
     ctx.clearRect(0, 0, w, h);
-    // 末段整体渐渐淡出（碎裂 → 渐隐）
-    const fadeStart = wipe * 0.45;
+    // 末段整体渐渐淡出（碎裂 → 渐隐）：更早开始、smoothstep 缓出，观感柔和
+    const fadeStart = wipe * 0.3;
     let globalAlpha = 1;
     if (age > fadeStart) {
-      globalAlpha = Math.max(0, 1 - (age - fadeStart) / Math.max(1, duration - fadeStart));
+      const t = Math.min(1, (age - fadeStart) / Math.max(1, duration - fadeStart));
+      globalAlpha = Math.max(0, 1 - t * t * (3 - 2 * t));
     }
     ctx.globalAlpha = globalAlpha;
     for (let i = 0; i < shards.length; i++) {
       const s = shards[i];
-      // 空气阻力减速（越飘越轻）+ 轻微重力下落
-      s.vx *= 1 - 0.85 * dt;
-      s.vy = s.vy * (1 - 0.55 * dt) + 60 * dt;
+      // 轻微错开：阻力大、减速快 + 微弱下沉，不飞散
+      s.vx *= 1 - 1.7 * dt;
+      s.vy = s.vy * (1 - 1.2 * dt) + 40 * dt;
       s.cx += s.vx * dt;
       s.cy += s.vy * dt;
-      s.rot += s.vr * dt;
-      // 以质心为轴旋转绘制
+      // 平移绘制（不旋转），碎块只是相互错开
       ctx.save();
-      ctx.translate(s.cx, s.cy);
-      ctx.rotate(s.rot);
+      ctx.translate(s.cx - s.ox, s.cy - s.oy);
       ctx.beginPath();
-      ctx.moveTo(s.ax - s.cx, s.ay - s.cy);
-      ctx.lineTo(s.bx - s.cx, s.by - s.cy);
-      ctx.lineTo(s.cx2 - s.cx, s.cy2 - s.cy);
+      ctx.moveTo(s.ax, s.ay);
+      ctx.lineTo(s.bx, s.by);
+      ctx.lineTo(s.cx2, s.cy2);
       ctx.closePath();
       const [r, g, b] = sampleColor(s.cx, s.cy);
       ctx.fillStyle = `rgba(${r},${g},${b},0.9)`;
       ctx.fill();
-      // 玻璃碎裂边缘高光
-      ctx.lineWidth = 1;
-      ctx.strokeStyle = "rgba(255,255,255,0.38)";
-      ctx.stroke();
       ctx.restore();
     }
     ctx.globalAlpha = 1;
