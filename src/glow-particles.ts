@@ -45,9 +45,14 @@ let cancelGlowFn: (() => void) | null = null;
  *  粒子层是全局单例，particles-start / particles-cancel 是两个独立事件通道、顺序不保证：
  *  快速"关闭→呼出→关闭"时旧 cancel 可能晚于新 start 到达，若不带序号会误停新动画。 */
 let lastGlowSeq = 0;
+/** 本窗口最近一次动画的便签屏幕位置（物理 px）：cancel 时带给粒子层按 (seq+origin) 精确匹配 */
+let lastOrigin = { x: 0, y: 0 };
 
 export function cancelGlowParticles(): void {
-  emit("particles-cancel", { seq: lastGlowSeq }).catch(() => {});
+  // 本窗口从未发起过动画（lastGlowSeq=0）→ 不发 cancel，避免误停其他便签的动画
+  if (lastGlowSeq > 0) {
+    emit("particles-cancel", { seq: lastGlowSeq, originX: lastOrigin.x, originY: lastOrigin.y }).catch(() => {});
+  }
   const c = cancelGlowFn;
   cancelGlowFn = null;
   if (c) {
@@ -185,6 +190,7 @@ export function requestGlowDissolveClose(
           // 便签局部 CSS px × resp + origin(物理) = 屏幕物理 px，与缩放解耦。
           layerOrigin.x = pos.x;
           layerOrigin.y = pos.y;
+          lastOrigin = { x: pos.x, y: pos.y }; // cancel 精确匹配用
         }
       }
       if (aborted) return;
