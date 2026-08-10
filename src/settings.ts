@@ -507,6 +507,7 @@ export async function openSettingsModal(): Promise<void> {
                   <option value="particle">粒子消散</option>
                   <option value="inhale">粒子吸入</option>
                   <option value="erode">火焰侵蚀</option>
+                  <option value="glass">玻璃碎裂</option>
                 </select>
               </div>
             </div>
@@ -998,7 +999,8 @@ export async function openSettingsModal(): Promise<void> {
   const particleModeSel = overlay.querySelector("#set-particle-mode") as HTMLSelectElement;
   particleModeSel.value =
     draft.particle_mode === "erode" ? "erode" :
-    draft.particle_mode === "inhale" ? "inhale" : "particle";
+    draft.particle_mode === "inhale" ? "inhale" :
+    draft.particle_mode === "glass" ? "glass" : "particle";
   enhanceSelect(particleModeSel);
   // ---- 粒子数量仅在「粒子吸入 / 粒子消散」时显示；火焰不使用该数值 ----
   const particleCountRow = overlay.querySelector("#particle-count-row") as HTMLElement;

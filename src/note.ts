@@ -23,6 +23,7 @@ import { DEFAULT_MD_CSS, DEFAULT_MD_CSS_DARK, getThemeCss, MD_BG_CSS } from "./m
 import { requestFlameDissolveClose, playFlameMaterialize, cancelFlame } from "./flame";
 import { requestGlowDissolveClose, cancelGlowParticles, bumpGlowGen } from "./glow-particles";
 import { requestInhaleDissolveClose, playInhaleMaterialize, cancelInhaleParticles } from "./glow-particles-inhale";
+import { requestGlassShardsClose, cancelGlassShards, restoreGlassSummoned } from "./glass-shatter";
 import { MAX_BLUR_PX, applyGlassBlur, parseColorToRgbInt } from "./glass";
 import { applyPanelBackground } from "./panel-bg";
 import {
@@ -856,6 +857,7 @@ export function mountNoteApp(noteId: string, preset = "") {
       finished = false;
         cancelFlame();
         cancelGlowParticles();
+        cancelGlassShards();
         // 关闭动画已被打断：把窗口视为"从空画面呼出"，补播呼出成形动画——
       // 否则 wasHidden 仍为 false（finish 未执行），呼出动画被吞掉、窗口空着。
       wasHidden = true;
@@ -889,6 +891,7 @@ export function mountNoteApp(noteId: string, preset = "") {
           const speed = s.animation_speed ?? 100;
           if (s.particle_mode === "erode") playFlameMaterialize(noteWindow, intensity, speed);
           else if (s.particle_mode === "inhale") playInhaleMaterialize(noteWindow, intensity, speed);
+          else if (s.particle_mode === "glass") restoreGlassSummoned(); // 玻璃碎裂无成形动画：直接复原
           else restoreGlowSummoned();
         })
         .catch(() => {
@@ -2110,6 +2113,7 @@ export function mountNoteApp(noteId: string, preset = "") {
     }
       cancelFlame();
       cancelGlowParticles();
+      cancelGlassShards();
       noteWindow.style.clipPath = "inset(0 0 100% 0)";
     noteWindow.style.boxShadow = "none";
     wasHidden = true;
@@ -2163,6 +2167,7 @@ export function mountNoteApp(noteId: string, preset = "") {
       cancelGlowParticles(); // 取消进行中的粒子光效呼出/关闭动画
       cancelInhaleParticles(); // 取消进行中的粒子吸入呼出/关闭动画
       cancelFlame(); // 防御：清掉任何残留的火焰动画，避免叠加
+      cancelGlassShards(); // 防御：清掉任何残留的玻璃碎裂动画，避免叠加
     summonSeq++; // 作废进行中的呼出（其 getSettings().then 会检查 seq 后跳过）
     closing = true;
     finished = false;
@@ -2182,6 +2187,8 @@ export function mountNoteApp(noteId: string, preset = "") {
         // 关闭动画：默认粒子光效（鸿蒙通知删除同款·与呼出共用同一套粒子）；火焰模式（设置值 "erode"，历史命名）用火焰消散；inhale=粒子吸入。
         if (s.particle_mode === "erode") requestFlameDissolveClose(finishClose, intensity, speed);
         else if (s.particle_mode === "inhale") requestInhaleDissolveClose(finishClose, intensity, speed);
+        // glass：玻璃碎裂 → 渐渐淡出（画布碎块动画，粒子数量滑块控制碎块多少）
+        else if (s.particle_mode === "glass") requestGlassShardsClose(finishClose, intensity, speed);
         // particle（默认粒子消散）：用全屏透明粒子层窗口渲染，粒子不被窗口框住（remote=true）——
         // 粒子可飘出便签边界、轨迹与 mask 同源（同一 T 场），是原本的正常行为，保留。
         else requestGlowDissolveClose(finishClose, intensity, speed, true);
@@ -2251,6 +2258,7 @@ export function mountNoteApp(noteId: string, preset = "") {
         cancelGlowParticles();
         cancelInhaleParticles();
         cancelFlame();
+        cancelGlassShards();
         finishClose();
         return;
       }

@@ -299,7 +299,7 @@ function toGlowColor(r: number, g: number, b: number): [number, number, number] 
   return hslToRgb(h, ns, nl);
 }
 
-interface ColorField {
+export interface ColorField {
   data: Uint8ClampedArray;
   fw: number;
   fh: number;
@@ -317,7 +317,7 @@ function extractUrl(prop: string): string {
  * + 面板半透明叠加（--note-panel-alpha）。随后按粒子生成区域采样主题色。
  * 背景图是 data URL（内存中），解码很快；给 140ms 上限，超时/失败回退纯色，绝不卡住动画。
  */
-function buildColorField(root: HTMLElement, w: number, h: number): Promise<ColorField | null> {
+export function buildColorField(root: HTMLElement, w: number, h: number): Promise<ColorField | null> {
   const fw = Math.max(8, Math.min(128, Math.round(w)));
   const fh = Math.max(8, Math.round((h * fw) / Math.max(1, w)));
   const c = document.createElement("canvas");
