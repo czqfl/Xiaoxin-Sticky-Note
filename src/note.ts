@@ -2240,10 +2240,11 @@ export function mountNoteApp(noteId: string, preset = "") {
     })
     .catch((e) => console.error("监听删除事件失败:", e));
 
-  // “全部关闭（全局）”快捷键由后端向每个可见窗口广播该事件，各窗口播放粒子消散动画后再关闭。
+  // “全部关闭（全局）”快捷键由后端向每个可见窗口广播该事件。
+  // 规则：只有**当前聚焦（正在查看）的便签**播放粒子消散动画；其余便签直接隐藏
+  // （不播粒子）——避免多便签同时消散造成"历史位置/非当前便签也有粒子"的视觉混乱。
   // 若本窗口正在播放关闭动画（closing）：快捷键"全部关闭"再次到来 → 立即完成——
-  // 清掉粒子层本便签实例 + 立即隐藏，避免"历史便签位置的粒子动画继续播放、与新建便签
-  // 的动画叠加成双动画/错位"。
+  // 清掉粒子层本便签实例 + 立即隐藏，避免历史便签位置的粒子动画继续播放/叠加。
   getCurrentWindow()
     .listen("play-close-anim", () => {
       if (closing) {
@@ -2253,7 +2254,17 @@ export function mountNoteApp(noteId: string, preset = "") {
         finishClose();
         return;
       }
-      requestAnimatedClose();
+      appWindow
+        .isFocused()
+        .then((focused) => {
+          if (!focused) {
+            // 非当前便签：直接隐藏，不播消散动画（只有当前查看的便签才消散）
+            finishClose();
+            return;
+          }
+          requestAnimatedClose();
+        })
+        .catch(() => requestAnimatedClose());
     })
     .catch((e) => console.error("监听关闭动画事件失败:", e));
 

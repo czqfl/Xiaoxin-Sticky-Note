@@ -344,6 +344,10 @@ const step = (now: number): void => {
 };
 
 function startLayer(p: ParticleLayerStart): void {
+  const now = Date.now();
+  // 防御：清理所有已过期实例（超过各自 duration 仍未移除——兜底防历史残留，
+  // 避免"历史位置出现粒子"）
+  anims = anims.filter((a) => now - a.layerStartAt < a.duration);
   // 同一便签（同 origin，容差 4px 吸收浮点/位置微动）的旧实例 → 移除（新动画覆盖旧的，
   // 快速重复触发不残留双实例）；不同位置（不同便签）的实例保留 → 多便签并发互不影响。
   anims = anims.filter((a) => !(Math.abs(a.originX - p.originX) < 4 && Math.abs(a.originY - p.originY) < 4));
