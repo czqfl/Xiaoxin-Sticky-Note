@@ -2128,6 +2128,31 @@ export function mountNoteApp(noteId: string, preset = "") {
   /** 关闭后亚克力尚未恢复的窗口期：此期间呼出需立即补上亚克力，
    *  否则窗口显示时无模糊、等定时器在可见窗口上触发 SWCA 才模糊（卡顿+模糊晚到）。 */
   let acrylicOffPending = false;
+  /** 立即完成关闭（隐藏窗口）：requestAnimatedClose 与 play-close-anim（快捷键"全部关闭"
+   *  打断正在播放的关闭动画）共用。复位 closing、关亚克力、隐藏窗口、标记已关闭。 */
+  const finishClose = () => {
+    closing = false; // 复位：主窗口隐藏后上下文仍在，必须复位
+    if (finished) return;
+    finished = true;
+    // 透明主题的 DWM 亚克力在窗口隐藏时会重新合成，出现"便签缩小一下"的残影：
+    // 隐藏前先关掉亚克力，隐藏后立刻恢复（50ms 内，窗口不可见无感知）——
+    // 保证下次呼出瞬间模糊已就绪，不会在可见窗口上触发 SWCA 造成卡顿。
+    setAcrylic(false, 0, 0).catch(() => {});
+    acrylicOffPending = true;
+    // 记录"已隐藏"：下次呼出时播放粒子成形动画（隐藏后窗口保持空画面）
+    wasHidden = true;
+    // 先真正关闭/隐藏窗口（关键路径，绝不被标记逻辑阻断），再异步标记已关闭
+    closeWindow().catch((e) => console.error("关闭失败:", e));
+    markNoteClosed(noteId).catch(() => {});
+    window.setTimeout(() => {
+      applyAcrylic()
+        .catch(() => {})
+        .finally(() => {
+          acrylicOffPending = false;
+        });
+    }, 50);
+  };
+
   function requestAnimatedClose() {
     if (closing) return;
     // 关闭动画期间抑制「保存中/已保存」提示（关闭会触发一次保存，但不应打扰关闭过程）
@@ -2141,31 +2166,9 @@ export function mountNoteApp(noteId: string, preset = "") {
     summonSeq++; // 作废进行中的呼出（其 getSettings().then 会检查 seq 后跳过）
     closing = true;
     finished = false;
-    const finish = () => {
-      closing = false; // 复位：主窗口隐藏后上下文仍在，必须复位
-      if (finished) return;
-      finished = true;
-      // 透明主题的 DWM 亚克力在窗口隐藏时会重新合成，出现"便签缩小一下"的残影：
-      // 隐藏前先关掉亚克力，隐藏后立刻恢复（50ms 内，窗口不可见无感知）——
-      // 保证下次呼出瞬间模糊已就绪，不会在可见窗口上触发 SWCA 造成卡顿。
-      setAcrylic(false, 0, 0).catch(() => {});
-      acrylicOffPending = true;
-      // 记录"已隐藏"：下次呼出时播放粒子成形动画（隐藏后窗口保持空画面）
-      wasHidden = true;
-      // 先真正关闭/隐藏窗口（关键路径，绝不被标记逻辑阻断），再异步标记已关闭
-      closeWindow().catch((e) => console.error("关闭失败:", e));
-      markNoteClosed(noteId).catch(() => {});
-      window.setTimeout(() => {
-        applyAcrylic()
-          .catch(() => {})
-          .finally(() => {
-            acrylicOffPending = false;
-          });
-      }, 50);
-    };
     // 透明主题：无粒子特效，直接隐藏（亚克力常驻整窗，无需动画遮罩）
     if (noteWindow.classList.contains("bg-transparent")) {
-      finish();
+      finishClose();
       return;
     }
     // 非透明主题：按粒子数量/风格设置启动关闭动画（数量从设置读取，失败回退默认 50）
@@ -2177,15 +2180,15 @@ export function mountNoteApp(noteId: string, preset = "") {
         const intensity = s.particle_count ?? 50;
         const speed = s.animation_speed ?? 100;
         // 关闭动画：默认粒子光效（鸿蒙通知删除同款·与呼出共用同一套粒子）；火焰模式（设置值 "erode"，历史命名）用火焰消散；inhale=粒子吸入。
-        if (s.particle_mode === "erode") requestFlameDissolveClose(finish, intensity, speed);
-        else if (s.particle_mode === "inhale") requestInhaleDissolveClose(finish, intensity, speed);
+        if (s.particle_mode === "erode") requestFlameDissolveClose(finishClose, intensity, speed);
+        else if (s.particle_mode === "inhale") requestInhaleDissolveClose(finishClose, intensity, speed);
         // particle（默认粒子消散）：用全屏透明粒子层窗口渲染，粒子不被窗口框住（remote=true）——
         // 粒子可飘出便签边界、轨迹与 mask 同源（同一 T 场），是原本的正常行为，保留。
-        else requestGlowDissolveClose(finish, intensity, speed, true);
+        else requestGlowDissolveClose(finishClose, intensity, speed, true);
       })
       .catch(() => {
         if (!closing) return;
-        requestGlowDissolveClose(finish);
+        requestGlowDissolveClose(finishClose);
       });
   }
 
@@ -2237,9 +2240,19 @@ export function mountNoteApp(noteId: string, preset = "") {
     })
     .catch((e) => console.error("监听删除事件失败:", e));
 
-  // “全部关闭（全局）”快捷键由后端向每个可见窗口广播该事件，各窗口播放粒子消散动画后再关闭
+  // “全部关闭（全局）”快捷键由后端向每个可见窗口广播该事件，各窗口播放粒子消散动画后再关闭。
+  // 若本窗口正在播放关闭动画（closing）：快捷键"全部关闭"再次到来 → 立即完成——
+  // 清掉粒子层本便签实例 + 立即隐藏，避免"历史便签位置的粒子动画继续播放、与新建便签
+  // 的动画叠加成双动画/错位"。
   getCurrentWindow()
     .listen("play-close-anim", () => {
+      if (closing) {
+        cancelGlowParticles();
+        cancelInhaleParticles();
+        cancelFlame();
+        finishClose();
+        return;
+      }
       requestAnimatedClose();
     })
     .catch((e) => console.error("监听关闭动画事件失败:", e));
