@@ -90,6 +90,21 @@ export function bumpGlowGen(): void {
   glowGen++;
 }
 
+/** 获取本（便签）窗口的屏幕位置（物理 px）。Tauri 的 outerPosition() 偶发失败时重试；
+ *  仍拿不到返回 null —— 调用方必须回退 self 模式，绝不能带 (0,0) 偏移让粒子错位生成。 */
+async function getNoteWindowPos(): Promise<{ x: number; y: number } | null> {
+  for (let i = 0; i < 3; i++) {
+    try {
+      const p = await getCurrentWindow().outerPosition();
+      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) return { x: p.x, y: p.y };
+    } catch {
+      /* 下一轮重试 */
+    }
+    if (i < 2) await new Promise((r) => window.setTimeout(r, 16));
+  }
+  return null;
+}
+
 /** 请求播放「粒子光效消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。
  * remote = true 时：本窗口只播放 mask 消散，粒子交给全屏透明粒子层窗口渲染
  * （粒子可飘出便签矩形边界、在整个屏幕自由飘散）。 */
@@ -141,21 +156,28 @@ export function requestGlowDissolveClose(
     }
     if (aborted) return;
     try {
+      // 便签窗口 dpr（物理 px ↔ CSS px 换算）：提到外层供 emit dprNote 使用
+      const noteDpr = Math.min(window.devicePixelRatio || 1, 2);
       // remote：提前并行获取颜色场与窗口位置（emit 不再 await，粒子层与 mask 几乎同步开始）
       let layerField: ColorField | null = null;
       let layerOrigin = { x: 0, y: 0 };
       if (useRemote && !aborted) {
         const w = window.innerWidth;
         const h = window.innerHeight;
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
         const [field, pos] = await Promise.all([
           buildColorField(root, w, h),
-          getCurrentWindow().outerPosition().catch(() => null),
+          getNoteWindowPos(), // outerPosition 失败重试；仍拿不到回退 self（见下）
         ]);
-        layerField = field;
-        if (pos) {
-          layerOrigin.x = pos.x / dpr;
-          layerOrigin.y = pos.y / dpr;
+        if (!pos) {
+          // 拿不到便签屏幕位置：绝不能带 (0,0) 偏移让粒子生成在屏幕左上角（完全错位）→
+          // 回退 self 模式（粒子画在便签窗口内，与 mask 天然同坐标、零偏移）。
+          useRemote = false;
+        } else {
+          layerField = field;
+          // 物理像素统一：origin 保持 pos 的物理 px（不再 /dpr）。粒子层网格 =
+          // 便签局部 CSS px × resp + origin(物理) = 屏幕物理 px，与缩放解耦。
+          layerOrigin.x = pos.x;
+          layerOrigin.y = pos.y;
         }
       }
       if (aborted) return;
@@ -183,6 +205,8 @@ export function requestGlowDissolveClose(
           density: particleDensity,
           speed,
           startAt: animStartAt,
+          // 便签窗口 dpr：粒子层物理 px ↔ CSS px 换算（网格 ×resp / 取色 / 速度）
+          dprNote: noteDpr,
         }).catch(() => {});
       }
     } catch (e) {

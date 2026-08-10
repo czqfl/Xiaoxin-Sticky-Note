@@ -6,14 +6,14 @@
 // 事件传入（type + 便签屏幕位置/尺寸 + 颜色场 + 粒子强度 + 动画速度）。
 // 动画播完自隐藏；「particles-cancel」立即停止并隐藏。
 
-import { getCurrentWindow, LogicalSize, LogicalPosition } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalPosition, PhysicalSize, currentMonitor } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
 type LayerKind = "particle" | "cylinder" | "vortex";
 
 interface ParticleLayerStart {
   type: LayerKind;
-  /** 便签窗口左上角屏幕坐标（CSS px） */
+  /** 便签窗口左上角屏幕坐标（**物理 px**）——粒子发射网格由此平移 */
   originX: number;
   originY: number;
   /** 便签窗口宽高（CSS px） */
@@ -31,8 +31,10 @@ interface ParticleLayerStart {
   density: number;
   /** 动画速度百分比（100=原速） */
   speed: number;
-  /** 便签动画开始时刻（performance.now() 时间戳）：粒子层用同一基准计算 age，保证与便签 mask 同步 */
+  /** 便签动画开始时刻（Date.now() 系统时钟）：粒子层用同一基准计算 age，保证与便签 mask 同步 */
   startAt?: number;
+  /** 便签窗口 devicePixelRatio（物理 px ↔ CSS px 换算：网格×resp、取色/速度用） */
+  dprNote?: number;
 }
 
 let canvas: HTMLCanvasElement | null = null;
@@ -48,6 +50,8 @@ let layerStartAt = 0;
 let started = false;
 let lastPaint = 0;
 let layerKind: LayerKind = "particle";
+/** 便签窗口 devicePixelRatio（emit 事件 dprNote）：物理 px ↔ CSS px 换算（网格/取色/速度） */
+let noteDpr = 1;
 
 // ---- 粒子池（SoA；particle 模式动态增减，cylinder/vortex 固定池重生）----
 let maxP = 1024;
@@ -141,6 +145,7 @@ const sampleT = (lx: number, ly: number): number => {
 };
 
 // ---- particle：从便签矩形内按 T 场时刻生成，向四周/上方飘散越过边界 ----
+// 物理像素统一后：坐标/速度均为物理 px（= CSS px × resp 缩放），视觉位移与 resp 无关。
 const spawn = (sx: number, sy: number, age: number): void => {
   if (pcount >= maxP) return;
   let life = (1800 + Math.random() * 1600) * k;
@@ -148,17 +153,18 @@ const spawn = (sx: number, sy: number, age: number): void => {
   if (fit < 120) return;
   if (life > fit) life = fit;
   const i = pcount++;
-  px[i] = sx;
+  px[i] = sx;   // 物理 px（屏幕）
   py[i] = sy;
   pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180);
-  pv0[i] = 20 + Math.random() * 40;
-  pv1[i] = 650;
+  pv0[i] = (20 + Math.random() * 40) * noteDpr; // 初速 × resp 转物理 px/s
+  pv1[i] = 650 * noteDpr;                       // 加速度 × resp 转物理 px/s²
   plife[i] = life;
   page[i] = 0;
   psize[i] = 1.8;
   pseed[i] = Math.random() * Math.PI * 2;
-  psway[i] = (Math.random() - 0.5) * 60;
-  const [r, g, b] = sampleColor(sx - originX, sy - originY);
+  psway[i] = (Math.random() - 0.5) * 60 * noteDpr; // 恒定向漂移 × resp 转物理
+  // 取色：sx - originX 为物理 px（相对便签左上），/noteDpr 转 CSS px 再采样颜色场
+  const [r, g, b] = sampleColor((sx - originX) / noteDpr, (sy - originY) / noteDpr);
   pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
 };
 
@@ -221,6 +227,7 @@ function buildEmitGrid(p: ParticleLayerStart): void {
   tW = p.tW || 8;
   tH = p.tH || 8;
   tField = p.tField || [];
+  noteDpr = Math.max(1, p.dprNote || 1); // 便签 dpr：物理 px ↔ CSS px 换算
   const spacing = 3;
   const ecx = Math.max(2, Math.ceil(rectW / spacing));
   const ecy = Math.max(2, Math.ceil(rectH / spacing));
@@ -233,10 +240,12 @@ function buildEmitGrid(p: ParticleLayerStart): void {
   maxEmitT = 0;
   for (let iy = 0; iy < ecy; iy++) {
     for (let ix = 0; ix < ecx; ix++) {
-      const lx = (ix + 0.5) * spacing;
+      const lx = (ix + 0.5) * spacing;   // 便签局部 CSS px
       const ly = (iy + 0.5) * spacing;
-      emitX[ei] = originX + lx;
-      emitY[ei] = originY + ly;
+      // 物理像素统一：局部 CSS px × resp 转物理 + origin（物理 px）= 屏幕物理 px。
+      // 与 resp 缩放/粒子层窗口 dpr 完全解耦（CSS px 方案在非 100% 缩放下会错位）。
+      emitX[ei] = originX + lx * noteDpr;
+      emitY[ei] = originY + ly * noteDpr;
       let T = sampleT(lx, ly);
       if (!isFinite(T) || T < 0) T = 0;
       emitT[ei] = T;
@@ -359,7 +368,7 @@ const frame = (now: number): void => {
       const speed = pv0[i] + pv1[i] * (a / 1000);
       const dx = Math.sin(pang[i]);
       const dy = -Math.cos(pang[i]);
-      const sway = Math.sin(a * 0.004 + pseed[i]) * 40;
+      const sway = Math.sin(a * 0.004 + pseed[i]) * 40 * noteDpr; // 摆动幅度 × resp 转物理
       px[i] += (dx * speed + psway[i] + sway) * dt;
       py[i] += dy * speed * dt;
       const t = 1 - u;
@@ -367,9 +376,10 @@ const frame = (now: number): void => {
       if (alpha < 0.02) continue;
       const haloR = psize[i] * 1.25;
       const o = drawCount * 7;
-      glData[o] = px[i] * dpr;
-      glData[o + 1] = py[i] * dpr;
-      glData[o + 2] = haloR * 2 * dpr;
+      // px/py 已是物理 px（网格物理化），直接输出，不再 × dpr；u_res = canvas.width（物理 px）
+      glData[o] = px[i];
+      glData[o + 1] = py[i];
+      glData[o + 2] = haloR * 2 * noteDpr; // 粒子直径 × resp 转物理
       glData[o + 3] = alpha;
       glData[o + 4] = pr[i];
       glData[o + 5] = pg[i];
@@ -478,15 +488,18 @@ const step = (now: number): void => {
 /** 动画前校准粒子层窗口几何：锚定屏幕左上角 (0,0) 并铺满整屏，同步 canvas 缓冲尺寸。
  *  关键：mount 时（app 启动、窗口未就绪）setSize 可能静默失败，窗口会停在 tauri.conf.json
  *  的固定 1920×1080 → 粒子屏幕坐标与窗口几何错位（压缩/偏移/完全错位）。每次动画开始前
- *  重新校准（resizable:true 时 setSize 才生效）。不改动画逻辑，仅修窗口几何。 */
+ *  重新校准（resizable:true 时 setSize 才生效）。尺寸用 **currentMonitor() 物理分辨率**
+ * （不依赖 window.screen.width 的 CSS/物理语义差异），与 resp 缩放完全解耦。 */
 async function calibrateLayerWindow(): Promise<void> {
   const win = getCurrentWindow();
-  const ww = Math.round(window.screen.width || window.innerWidth || 1920);
-  const hh = Math.round(window.screen.height || window.innerHeight || 1080);
+  // 主屏物理分辨率（粒子层窗口锚定 (0,0) → 所在屏 = 主屏）
+  const mon = await currentMonitor().catch(() => null);
+  const fallbackW = Math.round((window.screen.width || window.innerWidth || 1920) * (window.devicePixelRatio || 1));
+  const fallbackH = Math.round((window.screen.height || window.innerHeight || 1080) * (window.devicePixelRatio || 1));
+  const pw = Math.max(1, mon?.size?.width ?? fallbackW);
+  const ph = Math.max(1, mon?.size?.height ?? fallbackH);
   await win.setPosition(new LogicalPosition(0, 0)).catch(() => {});
-  await win.setSize(new LogicalSize(ww, hh)).catch(() => {});
-  const pw = Math.max(1, Math.round(ww * dpr));
-  const ph = Math.max(1, Math.round(hh * dpr));
+  await win.setSize(new PhysicalSize(pw, ph)).catch(() => {});
   if (canvas && (canvas.width !== pw || canvas.height !== ph)) {
     // canvas 尺寸变更会重置 WebGL context → 重建 GL 基础设施（program/buffer/attrib）
     canvas.width = pw;
@@ -613,16 +626,19 @@ export async function mountParticlesLayer(): Promise<void> {
   const win = getCurrentWindow();
   const ww = window.screen.width || window.innerWidth;
   const hh = window.screen.height || window.innerHeight;
+  // 初始校准（动画开始前 startLayer 还会再校准一次兜底）：物理尺寸，与 resp 缩放无关
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const pw = Math.max(1, Math.round(ww * dpr));
+  const ph = Math.max(1, Math.round(hh * dpr));
   await win.setPosition(new LogicalPosition(0, 0)).catch(() => {});
-  await win.setSize(new LogicalSize(ww, hh)).catch(() => {});
+  await win.setSize(new PhysicalSize(pw, ph)).catch(() => {});
   win.setIgnoreCursorEvents(true).catch(() => {});
   document.body.style.margin = "0";
   document.body.style.overflow = "hidden";
   document.body.style.background = "transparent";
-  dpr = Math.min(window.devicePixelRatio || 1, 2);
   canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(ww * dpr));
-  canvas.height = Math.max(1, Math.round(hh * dpr));
+  canvas.width = pw;
+  canvas.height = ph;
   canvas.style.position = "fixed";
   canvas.style.left = "0";
   canvas.style.top = "0";
