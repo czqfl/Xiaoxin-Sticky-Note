@@ -1,16 +1,12 @@
-// 便签「玻璃碎裂」关闭动画（v2：玻璃层破碎，背景保持完整）
+// 便签「玻璃碎裂」关闭动画（v3：玻璃层破碎 + 折射，裂纹去规律化、细节丰富）
 // ----------------------------------------------------------------------------
-// 正确语义（用户澄清）：碎裂的是覆盖在便签之上的「玻璃层」，不是便签内容本身。
-// - 便签内容（背景/文字）**全程保持完整、连续可见**：不裁空、不裂成方块；
-// - 在便签之上盖一层「玻璃」：蜘蛛网式裂纹（冲击点 P 放射裂纹 + 两层环带，
-//   模拟真实玻璃破碎的碎裂形态）；
-// - 裂缝处产生**折射变形**：每块玻璃碎片把底层背景纹理做小幅位移重贴（半透明），
-//   裂纹缝隙处透出完整便签 → 错位不连续 = 折射观感；裂纹边缘带亮线高光；
-// - 冲击瞬间有短促亮闪；碎片几乎不动（仅裂缝微开）；末段玻璃层连同便签一起淡出。
+// 核心语义（用户澄清）：碎裂的是覆盖在便签之上的「玻璃层」，便签内容全程完整可见。
+// - 玻璃层=不规则裂纹网：簇状主裂纹（角度分组聚簇、部分中途截止）+ 随机环带（2~3 层、
+//   比例随机、虚线断开=不闭合感）+ 递归分支裂缝（2~3 级、逐级变细变短）+ 毛刺抖动折线；
+// - 裂缝细节：宽窄/透明度随距冲击点渐细渐淡、断续间隙、明暗双描边（偏移暗影 + 亮线）；
+// - 质感层次：玻璃斜向高光渐变、裂纹粉尘颗粒（沿裂缝预生成）、冲击瞬间细小碎屑飞散 + 亮闪；
+// - 裂缝处折射：每块玻璃碎片把背景纹理做位移重贴（半透明），位移量越靠近冲击点越大。
 // ----------------------------------------------------------------------------
-// 触发：关闭窗口时播放（粒子风格 particle_mode = "glass" 时选用）。
-// 呼出时不播放成形动画：直接复原便签显示（note.ts summoned → restoreGlassSummoned）。
-//
 // 工程契约：rAF + 备份定时器帧驱动（备份路径不得调度 rAF）、看门狗强制收尾、
 //   cancel 停帧+复原页面且不触发 onDone、代次守卫防 cleanupAfterHide 误裁新呼出的便签。
 
@@ -191,6 +187,7 @@ function runGlass(
   const h = window.innerHeight;
   const k = Math.max(0.25, Math.min(4, 100 / Math.max(10, speed))); // 速度系数：200%→0.5（时长减半）
   const density = Math.max(0, Math.min(100, particleDensity)) / 100;
+  const halfDiag = Math.hypot(w, h) * 0.5;
 
   // ---- 时序 ----
   const impactMs = Math.round(150 * k); // 冲击亮闪时长
@@ -221,50 +218,186 @@ function runGlass(
   // ---- 背景纹理（折射位移重贴用；便签内容本身始终可见）----
   let bgTex: HTMLCanvasElement | null = null;
 
-  // ---- 玻璃破碎形态：蜘蛛网式（冲击点 P 放射裂纹 + 两层环带）----
-  const px = w * (0.3 + Math.random() * 0.4);
-  const py = h * (0.3 + Math.random() * 0.4);
-  const rayCount = 8 + Math.round(density * 4); // 8~12 条放射裂纹
-  const R = 2; // 环带层数
-  const ringFrac = [0.34, 0.66]; // 环带比例（中心到边界）
-  const ringPts: { x: number; y: number }[][] = []; // ringPts[i][k]：第 i 条射线第 k 层环带点
-  const rayEnd: { x: number; y: number }[] = []; // 第 i 条射线与矩形边界交点
-  for (let i = 0; i < rayCount; i++) {
-    const step = (Math.PI * 2) / rayCount;
-    const th = i * step + (Math.random() - 0.5) * step * 0.55; // 角度抖动
-    const cxs = Math.cos(th), sn = Math.sin(th);
+  // ================= 玻璃破碎形态生成（烘焙一次，静态） =================
+  // 冲击点（可偏边）
+  const px = w * (0.25 + Math.random() * 0.5);
+  const py = h * (0.25 + Math.random() * 0.5);
+  // 主裂纹：角度分组聚簇（打破等角/对称）
+  const mainCount = 7 + Math.round(density * 5); // 7~12 条
+  const anchorCount = 3 + Math.floor(Math.random() * 2); // 3~4 个角度簇锚点
+  const anchors: number[] = [];
+  for (let g = 0; g < anchorCount; g++) anchors.push(Math.random() * Math.PI * 2);
+  interface Polyline { pts: { x: number; y: number }[]; wMul: number; aMul: number }
+  const mainPolys: Polyline[] = [];
+  const allPolyPoints: { x: number; y: number }[] = []; // 供粉尘/碎屑撒点
+  const dirArr: { x: number; y: number }[] = [];
+  const tMaxArr: number[] = [];
+  const lenArr: number[] = [];
+  for (let i = 0; i < mainCount; i++) {
+    const th = anchors[Math.floor(Math.random() * anchorCount)] + (Math.random() - 0.5) * 0.95;
+    const dirx = Math.cos(th), diry = Math.sin(th);
     let tMax = Infinity;
-    if (cxs > 0.0001) tMax = Math.min(tMax, (w - px) / cxs);
-    else if (cxs < -0.0001) tMax = Math.min(tMax, -px / cxs);
-    if (sn > 0.0001) tMax = Math.min(tMax, (h - py) / sn);
-    else if (sn < -0.0001) tMax = Math.min(tMax, -py / sn);
+    if (dirx > 0.0001) tMax = Math.min(tMax, (w - px) / dirx);
+    else if (dirx < -0.0001) tMax = Math.min(tMax, -px / dirx);
+    if (diry > 0.0001) tMax = Math.min(tMax, (h - py) / diry);
+    else if (diry < -0.0001) tMax = Math.min(tMax, -py / diry);
+    const len = tMax * (0.45 + Math.random() * 0.55); // 部分中途截止（45%~100%）
+    // 折线化（毛刺/锯齿）：2~4 段 + 垂直抖动
+    const segN = 2 + Math.floor(Math.random() * 3);
+    const jamp = Math.min(7, len * 0.08);
+    const pts: { x: number; y: number }[] = [];
+    for (let s = 0; s <= segN; s++) {
+      const t = s / segN;
+      const jx = (s > 0 && s < segN ? (Math.random() - 0.5) * jamp : 0);
+      pts.push({
+        x: px + dirx * len * t + -diry * jx,
+        y: py + diry * len * t + dirx * jx,
+      });
+    }
+    mainPolys.push({ pts, wMul: 1, aMul: 1 });
+    allPolyPoints.push(...pts);
+    dirArr.push({ x: dirx, y: diry });
+    tMaxArr.push(tMax);
+    lenArr.push(len);
+  }
+  // 分支裂缝（2~3 级，逐级变细变短）
+  const branchPolys: Polyline[] = [];
+  const pointOnPoly = (poly: Polyline, t: number): { x: number; y: number } => {
+    const n = poly.pts.length - 1;
+    const f = t * n;
+    const i0 = Math.min(n - 1, Math.floor(f));
+    const a = poly.pts[i0], b = poly.pts[i0 + 1];
+    const u = f - i0;
+    return { x: a.x + (b.x - a.x) * u, y: a.y + (b.y - a.y) * u };
+  };
+  const totalBranchLen = (poly: Polyline): number => {
+    let L = 0;
+    for (let s = 0; s < poly.pts.length - 1; s++) L += Math.hypot(poly.pts[s + 1].x - poly.pts[s].x, poly.pts[s + 1].y - poly.pts[s].y);
+    return L;
+  };
+  for (let i = 0; i < mainCount; i++) {
+    const poly = mainPolys[i];
+    const parentLen = totalBranchLen(poly);
+    const th = Math.atan2(poly.pts[poly.pts.length - 1].y - poly.pts[0].y, poly.pts[poly.pts.length - 1].x - poly.pts[0].x);
+    const nb = Math.random() < 0.75 ? 1 + Math.floor(Math.random() * 2) : 0;
+    for (let b = 0; b < nb; b++) {
+      const t0 = 0.15 + Math.random() * 0.55;
+      const base = pointOnPoly(poly, t0);
+      const sign = Math.random() < 0.5 ? -1 : 1;
+      const bAng = th + sign * (0.5 + Math.random() * 0.75); // 与父裂纹夹角 30°~75°
+      const bLen = parentLen * (0.2 + Math.random() * 0.3);
+      const bSegN = 2;
+      const bPts: { x: number; y: number }[] = [];
+      const bjamp = Math.min(5, bLen * 0.1);
+      for (let s = 0; s <= bSegN; s++) {
+        const t = s / bSegN;
+        const jx = (s > 0 && s < bSegN ? (Math.random() - 0.5) * bjamp : 0);
+        bPts.push({
+          x: base.x + Math.cos(bAng) * bLen * t + -Math.sin(bAng) * jx,
+          y: base.y + Math.sin(bAng) * bLen * t + Math.cos(bAng) * jx,
+        });
+      }
+      branchPolys.push({ pts: bPts, wMul: 0.6, aMul: 0.85 });
+      allPolyPoints.push(...bPts);
+      // 三级分支（30% 概率，从分支中点再分）
+      if (Math.random() < 0.3 && bLen > 26) {
+        const c0 = 0.5;
+        const cbase = pointOnPoly({ pts: bPts, wMul: 1, aMul: 1 }, c0);
+        const cAng = bAng + (Math.random() < 0.5 ? -1 : 1) * (0.4 + Math.random() * 0.6);
+        const cLen = bLen * (0.4 + Math.random() * 0.25);
+        const cPts = [
+          { x: cbase.x, y: cbase.y },
+          { x: cbase.x + Math.cos(cAng) * cLen * 0.6 + -Math.sin(cAng) * (Math.random() - 0.5) * 3, y: cbase.y + Math.sin(cAng) * cLen * 0.6 + Math.cos(cAng) * (Math.random() - 0.5) * 3 },
+          { x: cbase.x + Math.cos(cAng) * cLen, y: cbase.y + Math.sin(cAng) * cLen },
+        ];
+        branchPolys.push({ pts: cPts, wMul: 0.4, aMul: 0.7 });
+        allPolyPoints.push(...cPts);
+      }
+    }
+  }
+  // 环带裂纹：2~3 层、比例随机、虚线断开（不闭合感）
+  const R = 2 + (Math.random() < 0.4 ? 1 : 0);
+  const fR: number[] = [];
+  for (let kk = 0; kk < R; kk++) fR.push(0.22 + Math.random() * 0.5);
+  fR.sort((a, b) => a - b);
+  const ringPolys: Polyline[] = [];
+  for (let kk = 0; kk < R; kk++) {
+    const pts: { x: number; y: number }[] = [];
+    for (let i = 0; i < mainCount; i++) {
+      const rr = tMaxArr[i] * fR[kk] + (Math.random() - 0.5) * Math.min(8, tMaxArr[i] * 0.05);
+      pts.push({ x: px + dirArr[i].x * rr, y: py + dirArr[i].y * rr });
+    }
+    pts.push({ ...pts[0] }); // 闭合
+    ringPolys.push({ pts, wMul: 1, aMul: 1 });
+    allPolyPoints.push(...pts);
+  }
+  // 二次冲击（30% 概率）：另一处小裂纹丛 + 碎屑
+  const secondImp = Math.random() < 0.3;
+  const p2 = secondImp
+    ? { x: px + (Math.random() - 0.5) * w * 0.6, y: py + (Math.random() - 0.5) * h * 0.6 }
+    : null;
+  if (p2) {
+    const secN = 3 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < secN; i++) {
+      const th = Math.random() * Math.PI * 2;
+      const dx2 = Math.cos(th), dy2 = Math.sin(th);
+      let tM = Infinity;
+      if (dx2 > 0.0001) tM = Math.min(tM, (w - p2.x) / dx2);
+      else if (dx2 < -0.0001) tM = Math.min(tM, -p2.x / dx2);
+      if (dy2 > 0.0001) tM = Math.min(tM, (h - p2.y) / dy2);
+      else if (dy2 < -0.0001) tM = Math.min(tM, -p2.y / dy2);
+      const L = tM * (0.25 + Math.random() * 0.3);
+      const pts = [
+        { x: p2.x, y: p2.y },
+        { x: p2.x + dx2 * L * 0.6 + -dy2 * (Math.random() - 0.5) * 4, y: p2.y + dy2 * L * 0.6 + dx2 * (Math.random() - 0.5) * 4 },
+        { x: p2.x + dx2 * L, y: p2.y + dy2 * L },
+      ];
+      branchPolys.push({ pts, wMul: 0.5, aMul: 0.75 });
+      allPolyPoints.push(...pts);
+    }
+  }
+
+  // ---- 裂纹线段（带属性：宽/透明度，随距冲击点渐细渐淡）----
+  interface CrackSeg { x1: number; y1: number; x2: number; y2: number; w: number; alpha: number }
+  const segs: CrackSeg[] = [];
+  const pushPolySegs = (poly: Polyline, taper: boolean, dashProb: number): void => {
+    const n = poly.pts.length - 1;
+    for (let s = 0; s < n; s++) {
+      if (dashProb > 0 && Math.random() < dashProb) continue; // 断续
+      const t = n > 1 ? s / (n - 1) : 0;
+      const w = (taper ? 1.9 - 1.15 * t : 1.35) * poly.wMul * (0.8 + Math.random() * 0.45);
+      const alpha = Math.min(0.72, (taper ? 0.62 - 0.36 * t : 0.42) * poly.aMul * (0.75 + Math.random() * 0.5));
+      segs.push({ x1: poly.pts[s].x, y1: poly.pts[s].y, x2: poly.pts[s + 1].x, y2: poly.pts[s + 1].y, w, alpha });
+    }
+  };
+  for (const poly of mainPolys) pushPolySegs(poly, true, 0);
+  for (const poly of branchPolys) pushPolySegs(poly, true, 0.12);
+  for (const poly of ringPolys) pushPolySegs(poly, false, 0.28);
+
+  // ---- 玻璃碎片（折射单元）：主射线全距 + 环带全距（保证铺满，缝隙=裂纹）----
+  interface Cell {
+    idx: number[];
+    sx: number; sy: number;
+    vx: number; vy: number;
+    rx: number; ry: number;
+  }
+  const allPts: { x: number; y: number }[] = [{ x: px, y: py }];
+  const ringPts: { x: number; y: number }[][] = [];
+  for (let kk = 0; kk < R; kk++) {
     const row: { x: number; y: number }[] = [];
-    for (let kk = 0; kk < R; kk++) {
-      const f = ringFrac[kk] * (0.9 + Math.random() * 0.2);
-      const rr = Math.max(6, tMax * f + (Math.random() - 0.5) * tMax * 0.06);
-      const jt = (Math.random() - 0.5) * step * 0.35; // 切向抖动
-      row.push({ x: px + Math.cos(th + jt) * rr, y: py + Math.sin(th + jt) * rr });
+    for (let i = 0; i < mainCount; i++) {
+      const rr = tMaxArr[i] * fR[kk] + (Math.random() - 0.5) * Math.min(8, tMaxArr[i] * 0.05);
+      row.push({ x: px + dirArr[i].x * rr, y: py + dirArr[i].y * rr });
     }
     ringPts.push(row);
-    rayEnd.push({ x: px + Math.cos(th) * (tMax + (Math.random() - 0.5) * 4), y: py + Math.sin(th) * (tMax + (Math.random() - 0.5) * 4) });
-  }
-  // 统一顶点表：0=冲击点，随后 射线×环带 点，最后 边界点
-  const allPts: { x: number; y: number }[] = [{ x: px, y: py }];
-  for (let i = 0; i < rayCount; i++) {
-    for (let kk = 0; kk < R; kk++) allPts.push(ringPts[i][kk]);
+    allPts.push(...row);
   }
   const boundStart = allPts.length;
-  for (let i = 0; i < rayCount; i++) allPts.push(rayEnd[i]);
-  const ringIdx = (i: number, kk: number): number => 1 + (i % rayCount) * R + kk;
-  const boundIdx = (i: number): number => boundStart + (i % rayCount);
-
-  // 玻璃碎片（蜘蛛网单元：中心三角 + 环带四边形 + 外沿四边形）
-  interface Cell {
-    idx: number[]; // allPts 顶点索引
-    sx: number; sy: number; // 裂缝开合位移（当前）
-    vx: number; vy: number; // 位移速度（微开，快速停）
-    rx: number; ry: number; // 折射位移（纹理重贴偏移）
+  for (let i = 0; i < mainCount; i++) {
+    allPts.push({ x: px + dirArr[i].x * tMaxArr[i], y: py + dirArr[i].y * tMaxArr[i] });
   }
+  const ringIdx = (kk: number, i: number): number => 1 + kk * mainCount + (i % mainCount);
+  const boundIdx = (i: number): number => boundStart + (i % mainCount);
   const cells: Cell[] = [];
   const mkCell = (idx: number[]): void => {
     let cx = 0, cy = 0;
@@ -276,7 +409,8 @@ function runGlass(
     cy /= idx.length;
     const ddx = cx - px, ddy = cy - py;
     const dl = Math.hypot(ddx, ddy) || 1;
-    const mag = 1.2 + Math.random() * 2.2; // 折射位移 1.2~3.4px
+    // 折射位移：越靠近冲击点越大（近 3.4px → 远 1px），加随机切向
+    const mag = 1.0 + 2.2 * (1 - Math.min(1, dl / halfDiag));
     const tan = (Math.random() - 0.5) * 0.7;
     const open = 3 + Math.random() * 5; // 裂缝微开速度
     cells.push({
@@ -288,21 +422,49 @@ function runGlass(
       ry: (ddy / dl) * mag + (ddx / dl) * tan * mag,
     });
   };
-  for (let i = 0; i < rayCount; i++) {
-    const ni = (i + 1) % rayCount;
-    mkCell([0, ringIdx(i, 0), ringIdx(ni, 0)]); // 中心三角
-    mkCell([ringIdx(i, 0), ringIdx(i, 1), ringIdx(ni, 1), ringIdx(ni, 0)]); // 环带四边形
-    mkCell([ringIdx(i, 1), ringIdx(ni, 1), boundIdx(ni), boundIdx(i)]); // 外沿四边形
+  for (let i = 0; i < mainCount; i++) {
+    const ni = (i + 1) % mainCount;
+    mkCell([0, ringIdx(0, i), ringIdx(0, ni)]); // 中心
+    for (let kk = 0; kk < R - 1; kk++) {
+      mkCell([ringIdx(kk, i), ringIdx(kk, ni), ringIdx(kk + 1, ni), ringIdx(kk + 1, i)]); // 环带间
+    }
+    mkCell([ringIdx(R - 1, i), ringIdx(R - 1, ni), boundIdx(ni), boundIdx(i)]); // 外沿
   }
-  // 裂纹线段（绘制亮线用）：放射裂纹（P→环0→环1→边界）+ 环带裂纹
-  const segs: [number, number][] = [];
-  for (let i = 0; i < rayCount; i++) {
-    const ni = (i + 1) % rayCount;
-    segs.push([0, ringIdx(i, 0)]);
-    segs.push([ringIdx(i, 0), ringIdx(i, 1)]);
-    segs.push([ringIdx(i, 1), boundIdx(i)]);
-    for (let kk = 0; kk < R; kk++) segs.push([ringIdx(i, kk), ringIdx(ni, kk)]);
+
+  // ---- 玻璃粉尘颗粒（沿裂缝预生成，随整体淡出）----
+  const dust: { x: number; y: number; r: number; bright: boolean }[] = [];
+  const dustCount = 20 + Math.round(density * 40);
+  for (let i = 0; i < dustCount; i++) {
+    const src = allPolyPoints[Math.floor(Math.random() * allPolyPoints.length)];
+    dust.push({
+      x: src.x + (Math.random() - 0.5) * 6,
+      y: src.y + (Math.random() - 0.5) * 6,
+      r: 0.5 + Math.random() * 1.1,
+      bright: Math.random() < 0.6,
+    });
   }
+
+  // ---- 冲击碎屑飞散（短暂）----
+  const burst: { x: number; y: number; vx: number; vy: number; life: number; age: number; size: number }[] = [];
+  const burstCount = 6 + Math.round(density * 8);
+  for (let i = 0; i < burstCount; i++) {
+    const a2 = Math.random() * Math.PI * 2;
+    const sp = 30 + Math.random() * 80;
+    burst.push({ x: px, y: py, vx: Math.cos(a2) * sp, vy: Math.sin(a2) * sp, life: 220 + Math.random() * 140, age: 0, size: 1 + Math.random() * 1.4 });
+  }
+  if (p2) {
+    for (let i = 0; i < 4; i++) {
+      const a2 = Math.random() * Math.PI * 2;
+      const sp = 20 + Math.random() * 50;
+      burst.push({ x: p2.x, y: p2.y, vx: Math.cos(a2) * sp, vy: Math.sin(a2) * sp, life: 160 + Math.random() * 100, age: 0, size: 0.8 + Math.random() });
+    }
+  }
+
+  // 玻璃斜向高光（极淡，缓存）
+  const sheen = ctx.createLinearGradient(0, 0, w, h);
+  sheen.addColorStop(0, "rgba(255,255,255,0.055)");
+  sheen.addColorStop(0.5, "rgba(255,255,255,0)");
+  sheen.addColorStop(1, "rgba(255,255,255,0.03)");
 
   // ---- 帧循环控制 ----
   let rafId = 0;
@@ -333,10 +495,8 @@ function runGlass(
     } catch {
       /* ignore */
     }
-    // 代次守卫（仅保护便签本体样式）：若已启动新动画（glassGen 改变），本实例的
-    // 延时清理作废，不再 blankRoot——否则会把刚呼出并已复原的便签再次裁空。
     if (myGen !== glassGen) return;
-    blankRoot(root); // 保持"空画面"供下次呼出
+    blankRoot(root);
     glassActive = false;
   };
 
@@ -363,7 +523,7 @@ function runGlass(
     const dt = Math.min(0.05, Math.max(0.001, (now - lastPaint) / 1000));
     lastPaint = now;
 
-    // 末段整体渐渐淡出（玻璃层 → 渐隐）：smoothstep 缓出
+    // 末段整体渐渐淡出（smoothstep 缓出）
     const fadeStart = wipe * 0.3;
     let glassAlpha = 1;
     if (age > fadeStart) {
@@ -374,59 +534,93 @@ function runGlass(
     ctx.clearRect(0, 0, w, h);
     ctx.globalAlpha = glassAlpha;
 
-    // ---- 玻璃碎片：半透明折射贴片（背景纹理位移重贴 → 裂缝处错位 = 折射）----
+    // 1) 玻璃碎片：半透明折射贴片（背景纹理位移重贴 → 裂缝处错位 = 折射）
     for (const cl of cells) {
       cl.sx += cl.vx * dt;
       cl.sy += cl.vy * dt;
       cl.vx *= 1 - 4 * dt;
       cl.vy *= 1 - 4 * dt;
       ctx.save();
-      ctx.translate(cl.sx, cl.sy); // 裂缝微开
+      ctx.translate(cl.sx, cl.sy);
       ctx.beginPath();
       ctx.moveTo(allPts[cl.idx[0]].x, allPts[cl.idx[0]].y);
       for (let q = 1; q < cl.idx.length; q++) ctx.lineTo(allPts[cl.idx[q]].x, allPts[cl.idx[q]].y);
       ctx.closePath();
       ctx.clip();
       if (bgTex) {
-        // 折射：纹理位移重贴（半透明 → 底下完整便签透出）
         ctx.globalAlpha = glassAlpha * 0.4;
         ctx.drawImage(bgTex, cl.rx, cl.ry);
         ctx.globalAlpha = glassAlpha;
       }
-      // 玻璃极淡冷色调
       ctx.fillStyle = "rgba(206,224,250,0.05)";
       ctx.fill();
       ctx.restore();
     }
 
-    // ---- 裂纹亮线（玻璃边缘受光）----
-    if (glassAlpha > 0.01) {
-      ctx.strokeStyle = `rgba(255,255,255,${(0.5 * glassAlpha).toFixed(3)})`;
-      ctx.lineWidth = 1.2;
+    // 2) 玻璃斜向高光（极淡）
+    ctx.fillStyle = sheen;
+    ctx.fillRect(0, 0, w, h);
+
+    // 3) 裂纹：明暗双描边（偏移暗影 + 亮线），宽窄/透明度已烘焙在 segs
+    for (const sg of segs) {
+      ctx.save();
+      ctx.translate(1, 1);
+      ctx.strokeStyle = `rgba(16,18,34,${(0.16 * sg.alpha * glassAlpha).toFixed(3)})`;
+      ctx.lineWidth = sg.w + 0.9;
       ctx.beginPath();
-      for (const [a, b] of segs) {
-        ctx.moveTo(allPts[a].x, allPts[a].y);
-        ctx.lineTo(allPts[b].x, allPts[b].y);
-      }
+      ctx.moveTo(sg.x1, sg.y1);
+      ctx.lineTo(sg.x2, sg.y2);
+      ctx.stroke();
+      ctx.restore();
+      ctx.strokeStyle = `rgba(255,255,255,${(sg.alpha * glassAlpha).toFixed(3)})`;
+      ctx.lineWidth = sg.w;
+      ctx.beginPath();
+      ctx.moveTo(sg.x1, sg.y1);
+      ctx.lineTo(sg.x2, sg.y2);
       ctx.stroke();
     }
 
-    // ---- 冲击瞬间亮闪（冲击点放射短光线，快速消失）----
+    // 4) 玻璃粉尘颗粒（随整体淡出）
+    for (const d of dust) {
+      ctx.fillStyle = d.bright ? `rgba(255,255,255,${(0.45 * glassAlpha).toFixed(3)})` : `rgba(40,46,66,${(0.28 * glassAlpha).toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(d.x, d.y, d.r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 5) 冲击碎屑飞散（短暂，快速衰减）
+    for (let i = 0; i < burst.length; i++) {
+      const b = burst[i];
+      b.age += dt * 1000;
+      if (b.age >= b.life) continue;
+      b.x += b.vx * dt;
+      b.y += b.vy * dt;
+      b.vx *= 1 - 3.5 * dt;
+      b.vy *= 1 - 3.5 * dt;
+      const a = (1 - b.age / b.life) * glassAlpha;
+      if (a < 0.02) continue;
+      ctx.fillStyle = `rgba(255,255,255,${a.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 6) 冲击瞬间亮闪（短促）
     if (age < impactMs) {
       const t = age / impactMs;
-      ctx.strokeStyle = `rgba(255,255,255,${((1 - t) * 0.6).toFixed(3)})`;
+      ctx.strokeStyle = `rgba(255,255,255,${((1 - t) * 0.55).toFixed(3)})`;
       ctx.lineWidth = 1.5;
-      for (let i = 0; i < rayCount; i++) {
-        const f = 0.28 + t * 0.16;
+      for (let i = 0; i < mainCount; i++) {
+        const f = 0.24 + t * 0.18;
         ctx.beginPath();
         ctx.moveTo(px, py);
-        ctx.lineTo(px + (rayEnd[i].x - px) * f, py + (rayEnd[i].y - py) * f);
+        ctx.lineTo(px + dirArr[i].x * lenArr[i] * f, py + dirArr[i].y * lenArr[i] * f);
         ctx.stroke();
       }
     }
     ctx.globalAlpha = 1;
 
-    // ---- 便签本体末段一起淡出（关闭收尾）----
+    // 便签本体末段一起淡出（关闭收尾）
     const noteFadeStart = wipe * 0.7;
     if (age > noteFadeStart) {
       const t = Math.min(1, (age - noteFadeStart) / Math.max(1, duration - noteFadeStart));
@@ -435,7 +629,7 @@ function runGlass(
 
     if (age >= duration) {
       stopLoop();
-      onDone(); // 触发真正隐藏窗口
+      onDone();
       window.setTimeout(cleanupAfterHide, 400);
     }
   };
@@ -446,8 +640,7 @@ function runGlass(
     if (!endedLocal) rafId = requestAnimationFrame(step);
   };
 
-  // 背景纹理就绪后再启动（底色立即；背景图 ≤140ms 上限解码）。
-  // 便签内容不裁空：玻璃只是盖在上面的一层，背景全程完整可见。
+  // 背景纹理就绪后再启动（底色立即；背景图 ≤140ms 上限解码）。便签内容不裁空。
   buildBgTexture(root, w, h).then((tex) => {
     if (endedLocal) return;
     bgTex = tex;
@@ -466,7 +659,6 @@ function runGlass(
         frame(now);
       }
     }, 40);
-    // 看门狗：无论循环是否推进，到时强制收尾，杜绝卡死
     watchdog2 = window.setTimeout(() => {
       if (endedLocal) return;
       stopLoop();
@@ -475,7 +667,6 @@ function runGlass(
     }, duration + 600);
   });
 
-  // 返回"立即中止"句柄（cancelGlassShards 调用）：停帧、复原页面、移除覆盖层。
   return () => {
     stopLoop();
     restoreRoot(root);
