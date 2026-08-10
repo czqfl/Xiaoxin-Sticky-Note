@@ -1,19 +1,18 @@
-// 便签「玻璃碎裂」关闭动画：便签瞬间碎裂成几大块玻璃（抖动网格三角化），
-// 碎块轻微错开、不旋转、不飞散，末段整体柔和淡出（碎裂 → 渐隐）。
+// 便签「玻璃碎裂」关闭动画（v2：玻璃层破碎，背景保持完整）
+// ----------------------------------------------------------------------------
+// 正确语义（用户澄清）：碎裂的是覆盖在便签之上的「玻璃层」，不是便签内容本身。
+// - 便签内容（背景/文字）**全程保持完整、连续可见**：不裁空、不裂成方块；
+// - 在便签之上盖一层「玻璃」：蜘蛛网式裂纹（冲击点 P 放射裂纹 + 两层环带，
+//   模拟真实玻璃破碎的碎裂形态）；
+// - 裂缝处产生**折射变形**：每块玻璃碎片把底层背景纹理做小幅位移重贴（半透明），
+//   裂纹缝隙处透出完整便签 → 错位不连续 = 折射观感；裂纹边缘带亮线高光；
+// - 冲击瞬间有短促亮闪；碎片几乎不动（仅裂缝微开）；末段玻璃层连同便签一起淡出。
 // ----------------------------------------------------------------------------
 // 触发：关闭窗口时播放（粒子风格 particle_mode = "glass" 时选用）。
-// 呼出时不播放成形动画：直接复原便签显示（见 note.ts summoned 处理 → restoreGlassSummoned）。
+// 呼出时不播放成形动画：直接复原便签显示（note.ts summoned → restoreGlassSummoned）。
 //
-// 实现要点：
-// - 便签本体在动画真正开始（颜色场就绪）时才裁空（clip-path inset 全裁），碎块接管画面；
-// - 碎块 = 抖动网格三角化（每格 2 个三角形），颜色采样自便签「区域颜色场」
-//   （复用 glow-particles.ts 的 buildColorField，含背景图 cover 取色）；
-// - 碎块运动：从便签中心向外飞散（外圈更快）+ 空气阻力减速 + 自旋 + 轻微重力 + 末段整体淡出；
-// - 玻璃质感：碎块纯色填充（无描边高光，干净克制）；
-// - 工程契约：rAF + 备份定时器帧驱动（备份路径不得调度 rAF）、看门狗强制收尾、
+// 工程契约：rAF + 备份定时器帧驱动（备份路径不得调度 rAF）、看门狗强制收尾、
 //   cancel 停帧+复原页面且不触发 onDone、代次守卫防 cleanupAfterHide 误裁新呼出的便签。
-
-import { buildColorField, type ColorField } from "./glow-particles";
 
 let glassActive = false;
 /** 动画代次：每次 runGlass 启动 +1。上一轮遗留的延时清理（cleanupAfterHide）凭此作废，
@@ -70,7 +69,7 @@ function blankRoot(root: HTMLElement): void {
   }
 }
 
-/** 呼出复原（玻璃模式无成形动画）：清残留空画面样式 + 作废上一轮关闭动画的延时清理 + 移除画布。 */
+/** 呼出复原（玻璃模式无成形动画）：清残留样式 + 作废上一轮关闭动画的延时清理 + 移除画布。 */
 export function restoreGlassSummoned(): void {
   bumpGlassGen();
   const root = document.querySelector(".note-window") as HTMLElement | null;
@@ -118,6 +117,67 @@ export function requestGlassShardsClose(onDone: () => void, particleDensity = 50
   }
 }
 
+/** 在便签分辨率重建背景纹理（底色 + 背景图 cover + 面板调色），供玻璃折射位移重贴。 */
+function buildBgTexture(root: HTMLElement, w: number, h: number): Promise<HTMLCanvasElement | null> {
+  const c = document.createElement("canvas");
+  c.width = Math.max(8, Math.round(w));
+  c.height = Math.max(8, Math.round(h));
+  const ctx2 = c.getContext("2d");
+  if (!ctx2) return Promise.resolve(null);
+  const cs = getComputedStyle(root);
+  const bgColor = cs.backgroundColor || "rgb(128,128,128)";
+  let panelAlpha = parseFloat(cs.getPropertyValue("--note-panel-alpha"));
+  if (!isFinite(panelAlpha) || panelAlpha <= 0 || panelAlpha > 1) panelAlpha = 0.7;
+  const m = cs.getPropertyValue("--note-bg-img").match(/url\((['"]?)([\s\S]*?)\1\)/);
+  const dataUrl = m ? m[2] : "";
+  const fillSolid = (): void => {
+    ctx2.fillStyle = bgColor;
+    ctx2.fillRect(0, 0, w, h);
+  };
+  if (!dataUrl) {
+    fillSolid();
+    return Promise.resolve(c);
+  }
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (img: HTMLImageElement | null): void => {
+      if (settled) return;
+      settled = true;
+      if (img && img.naturalWidth > 0) {
+        const iw = img.naturalWidth, ih = img.naturalHeight;
+        const ir = iw / ih, fr = w / h;
+        let dw: number, dh: number, dx: number, dy: number;
+        if (ir > fr) {
+          dh = h; dw = h * ir; dx = (w - dw) / 2; dy = 0;
+        } else {
+          dw = w; dh = w / ir; dx = 0; dy = (h - dh) / 2;
+        }
+        ctx2.fillStyle = bgColor;
+        ctx2.fillRect(0, 0, w, h);
+        ctx2.drawImage(img, dx, dy, dw, dh);
+        ctx2.globalAlpha = panelAlpha * 0.15;
+        ctx2.fillStyle = bgColor;
+        ctx2.fillRect(0, 0, w, h);
+        ctx2.globalAlpha = 1;
+      } else {
+        fillSolid();
+      }
+      resolve(c);
+    };
+    const img = new Image();
+    const timer = window.setTimeout(() => finish(null), 140);
+    img.onload = () => {
+      window.clearTimeout(timer);
+      finish(img);
+    };
+    img.onerror = () => {
+      window.clearTimeout(timer);
+      finish(null);
+    };
+    img.src = dataUrl;
+  });
+}
+
 /** 播放一次玻璃碎裂动画。 */
 function runGlass(
   root: HTMLElement,
@@ -133,10 +193,11 @@ function runGlass(
   const density = Math.max(0, Math.min(100, particleDensity)) / 100;
 
   // ---- 时序 ----
-  const wipe = Math.round(1250 * k); // 碎裂飞散主体时长 ms
-  const duration = wipe + Math.round(280 * k); // 总时长（含收尾余量）
+  const impactMs = Math.round(150 * k); // 冲击亮闪时长
+  const wipe = Math.round(1250 * k); // 玻璃层可见主体时长
+  const duration = wipe + Math.round(260 * k); // 总时长（含收尾余量）
 
-  // ---- 覆盖层 canvas（2D，画在便签窗口内，zIndex 置顶）----
+  // ---- 覆盖层 canvas（2D，画在便签窗口内、内容之上，zIndex 置顶）----
   const canvas = document.createElement("canvas");
   canvas.className = "glass-canvas";
   canvas.width = Math.max(1, Math.round(w * dpr));
@@ -157,75 +218,90 @@ function runGlass(
   }
   ctx.scale(dpr, dpr);
 
-  // ---- 颜色场（异步构建；之后按碎块质心采样，碎块 = 便签表面颜色 = 玻璃色）----
-  let field: ColorField | null = null;
-  const sampleColor = (x: number, y: number): [number, number, number] => {
-    if (!field || field.data.length < 4) return [225, 232, 245];
-    let fx = Math.round((x / w) * field.fw);
-    if (fx < 0) fx = 0;
-    else if (fx >= field.fw) fx = field.fw - 1;
-    let fy = Math.round((y / h) * field.fh);
-    if (fy < 0) fy = 0;
-    else if (fy >= field.fh) fy = field.fh - 1;
-    const idx = (fy * field.fw + fx) * 4;
-    const r = field.data[idx], g = field.data[idx + 1], b = field.data[idx + 2];
-    const max = Math.max(r, g, b);
-    if (!isFinite(max)) return [225, 232, 245];
-    if (max >= 150) return [r, g, b];
-    const f = 150 / Math.max(1, max);
-    return [Math.min(255, r * f), Math.min(255, g * f), Math.min(255, b * f)];
-  };
+  // ---- 背景纹理（折射位移重贴用；便签内容本身始终可见）----
+  let bgTex: HTMLCanvasElement | null = null;
 
-  // ---- 碎块生成：抖动网格三角化（每格 2 个三角形 = 2 块玻璃）----
-  // 碎块更大更少（96~170px 格子，密度越高越碎，但仍是整块玻璃感）；
-  // 碎块颜色 = 质心处便签表面颜色
-  const cell = Math.max(96, 170 - 70 * density);
-  const cols = Math.max(4, Math.round(w / cell));
-  const rows = Math.max(3, Math.round(h / cell));
-  const gw = w / cols, gh = h / rows;
-  interface Shard {
-    ax: number; ay: number; bx: number; by: number; cx2: number; cy2: number;
-    ox: number; oy: number; // 初始质心（碎块绘制位置从它偏移）
-    cx: number; cy: number; // 当前质心
-    vx: number; vy: number;
-  }
-  const shards: Shard[] = [];
-  const vx = new Float32Array((cols + 1) * (rows + 1));
-  const vy = new Float32Array((cols + 1) * (rows + 1));
-  for (let j = 0; j <= rows; j++) {
-    for (let i = 0; i <= cols; i++) {
-      const idx = j * (cols + 1) + i;
-      // 内部顶点轻微抖动（±20% 格宽）→ 裂痕自然；边缘顶点不抖（保持外轮廓）
-      const jx = (i === 0 || i === cols) ? 0 : (Math.random() - 0.5) * gw * 0.4;
-      const jy = (j === 0 || j === rows) ? 0 : (Math.random() - 0.5) * gh * 0.4;
-      vx[idx] = i * gw + jx;
-      vy[idx] = j * gh + jy;
+  // ---- 玻璃破碎形态：蜘蛛网式（冲击点 P 放射裂纹 + 两层环带）----
+  const px = w * (0.3 + Math.random() * 0.4);
+  const py = h * (0.3 + Math.random() * 0.4);
+  const rayCount = 8 + Math.round(density * 4); // 8~12 条放射裂纹
+  const R = 2; // 环带层数
+  const ringFrac = [0.34, 0.66]; // 环带比例（中心到边界）
+  const ringPts: { x: number; y: number }[][] = []; // ringPts[i][k]：第 i 条射线第 k 层环带点
+  const rayEnd: { x: number; y: number }[] = []; // 第 i 条射线与矩形边界交点
+  for (let i = 0; i < rayCount; i++) {
+    const step = (Math.PI * 2) / rayCount;
+    const th = i * step + (Math.random() - 0.5) * step * 0.55; // 角度抖动
+    const cxs = Math.cos(th), sn = Math.sin(th);
+    let tMax = Infinity;
+    if (cxs > 0.0001) tMax = Math.min(tMax, (w - px) / cxs);
+    else if (cxs < -0.0001) tMax = Math.min(tMax, -px / cxs);
+    if (sn > 0.0001) tMax = Math.min(tMax, (h - py) / sn);
+    else if (sn < -0.0001) tMax = Math.min(tMax, -py / sn);
+    const row: { x: number; y: number }[] = [];
+    for (let kk = 0; kk < R; kk++) {
+      const f = ringFrac[kk] * (0.9 + Math.random() * 0.2);
+      const rr = Math.max(6, tMax * f + (Math.random() - 0.5) * tMax * 0.06);
+      const jt = (Math.random() - 0.5) * step * 0.35; // 切向抖动
+      row.push({ x: px + Math.cos(th + jt) * rr, y: py + Math.sin(th + jt) * rr });
     }
+    ringPts.push(row);
+    rayEnd.push({ x: px + Math.cos(th) * (tMax + (Math.random() - 0.5) * 4), y: py + Math.sin(th) * (tMax + (Math.random() - 0.5) * 4) });
   }
-  const halfDiag = Math.hypot(w, h) * 0.5; // 归一化飞散速度用
-  const pushTri = (a: number, b: number, c: number): void => {
-    const ax = vx[a], ay = vy[a], bx = vx[b], by = vy[b], cx2 = vx[c], cy2 = vy[c];
-    const cx = (ax + bx + cx2) / 3, cy = (ay + by + cy2) / 3;
-    // 从便签中心轻微错开：速度小、方向带轻微随机；不旋转
-    const dx = cx - w / 2, dy = cy - h / 2;
-    const dist = Math.hypot(dx, dy) || 1;
-    const speedBase = (6 + Math.random() * 22) * (0.6 + 0.5 * Math.min(1, dist / halfDiag));
-    const jitter = (Math.random() - 0.5) * 0.5;
-    shards.push({
-      ax, ay, bx, by, cx2, cy2, ox: cx, oy: cy, cx, cy,
-      vx: (dx / dist) * speedBase + (-dy / dist) * jitter * speedBase,
-      vy: (dy / dist) * speedBase + (dx / dist) * jitter * speedBase,
+  // 统一顶点表：0=冲击点，随后 射线×环带 点，最后 边界点
+  const allPts: { x: number; y: number }[] = [{ x: px, y: py }];
+  for (let i = 0; i < rayCount; i++) {
+    for (let kk = 0; kk < R; kk++) allPts.push(ringPts[i][kk]);
+  }
+  const boundStart = allPts.length;
+  for (let i = 0; i < rayCount; i++) allPts.push(rayEnd[i]);
+  const ringIdx = (i: number, kk: number): number => 1 + (i % rayCount) * R + kk;
+  const boundIdx = (i: number): number => boundStart + (i % rayCount);
+
+  // 玻璃碎片（蜘蛛网单元：中心三角 + 环带四边形 + 外沿四边形）
+  interface Cell {
+    idx: number[]; // allPts 顶点索引
+    sx: number; sy: number; // 裂缝开合位移（当前）
+    vx: number; vy: number; // 位移速度（微开，快速停）
+    rx: number; ry: number; // 折射位移（纹理重贴偏移）
+  }
+  const cells: Cell[] = [];
+  const mkCell = (idx: number[]): void => {
+    let cx = 0, cy = 0;
+    for (const ii of idx) {
+      cx += allPts[ii].x;
+      cy += allPts[ii].y;
+    }
+    cx /= idx.length;
+    cy /= idx.length;
+    const ddx = cx - px, ddy = cy - py;
+    const dl = Math.hypot(ddx, ddy) || 1;
+    const mag = 1.2 + Math.random() * 2.2; // 折射位移 1.2~3.4px
+    const tan = (Math.random() - 0.5) * 0.7;
+    const open = 3 + Math.random() * 5; // 裂缝微开速度
+    cells.push({
+      idx,
+      sx: 0, sy: 0,
+      vx: (ddx / dl) * open + (-ddy / dl) * tan * open,
+      vy: (ddy / dl) * open + (ddx / dl) * tan * open,
+      rx: (ddx / dl) * mag + (-ddy / dl) * tan * mag,
+      ry: (ddy / dl) * mag + (ddx / dl) * tan * mag,
     });
   };
-  for (let j = 0; j < rows; j++) {
-    for (let i = 0; i < cols; i++) {
-      const a = j * (cols + 1) + i;
-      const b = a + 1;
-      const c = a + cols + 1;
-      const d = c + 1;
-      pushTri(a, b, c);
-      pushTri(b, d, c);
-    }
+  for (let i = 0; i < rayCount; i++) {
+    const ni = (i + 1) % rayCount;
+    mkCell([0, ringIdx(i, 0), ringIdx(ni, 0)]); // 中心三角
+    mkCell([ringIdx(i, 0), ringIdx(i, 1), ringIdx(ni, 1), ringIdx(ni, 0)]); // 环带四边形
+    mkCell([ringIdx(i, 1), ringIdx(ni, 1), boundIdx(ni), boundIdx(i)]); // 外沿四边形
+  }
+  // 裂纹线段（绘制亮线用）：放射裂纹（P→环0→环1→边界）+ 环带裂纹
+  const segs: [number, number][] = [];
+  for (let i = 0; i < rayCount; i++) {
+    const ni = (i + 1) % rayCount;
+    segs.push([0, ringIdx(i, 0)]);
+    segs.push([ringIdx(i, 0), ringIdx(i, 1)]);
+    segs.push([ringIdx(i, 1), boundIdx(i)]);
+    for (let kk = 0; kk < R; kk++) segs.push([ringIdx(i, kk), ringIdx(ni, kk)]);
   }
 
   // ---- 帧循环控制 ----
@@ -287,36 +363,75 @@ function runGlass(
     const dt = Math.min(0.05, Math.max(0.001, (now - lastPaint) / 1000));
     lastPaint = now;
 
-    ctx.clearRect(0, 0, w, h);
-    // 末段整体渐渐淡出（碎裂 → 渐隐）：更早开始、smoothstep 缓出，观感柔和
+    // 末段整体渐渐淡出（玻璃层 → 渐隐）：smoothstep 缓出
     const fadeStart = wipe * 0.3;
-    let globalAlpha = 1;
+    let glassAlpha = 1;
     if (age > fadeStart) {
       const t = Math.min(1, (age - fadeStart) / Math.max(1, duration - fadeStart));
-      globalAlpha = Math.max(0, 1 - t * t * (3 - 2 * t));
+      glassAlpha = Math.max(0, 1 - t * t * (3 - 2 * t));
     }
-    ctx.globalAlpha = globalAlpha;
-    for (let i = 0; i < shards.length; i++) {
-      const s = shards[i];
-      // 轻微错开：阻力大、减速快 + 微弱下沉，不飞散
-      s.vx *= 1 - 1.7 * dt;
-      s.vy = s.vy * (1 - 1.2 * dt) + 40 * dt;
-      s.cx += s.vx * dt;
-      s.cy += s.vy * dt;
-      // 平移绘制（不旋转），碎块只是相互错开
+
+    ctx.clearRect(0, 0, w, h);
+    ctx.globalAlpha = glassAlpha;
+
+    // ---- 玻璃碎片：半透明折射贴片（背景纹理位移重贴 → 裂缝处错位 = 折射）----
+    for (const cl of cells) {
+      cl.sx += cl.vx * dt;
+      cl.sy += cl.vy * dt;
+      cl.vx *= 1 - 4 * dt;
+      cl.vy *= 1 - 4 * dt;
       ctx.save();
-      ctx.translate(s.cx - s.ox, s.cy - s.oy);
+      ctx.translate(cl.sx, cl.sy); // 裂缝微开
       ctx.beginPath();
-      ctx.moveTo(s.ax, s.ay);
-      ctx.lineTo(s.bx, s.by);
-      ctx.lineTo(s.cx2, s.cy2);
+      ctx.moveTo(allPts[cl.idx[0]].x, allPts[cl.idx[0]].y);
+      for (let q = 1; q < cl.idx.length; q++) ctx.lineTo(allPts[cl.idx[q]].x, allPts[cl.idx[q]].y);
       ctx.closePath();
-      const [r, g, b] = sampleColor(s.cx, s.cy);
-      ctx.fillStyle = `rgba(${r},${g},${b},0.9)`;
+      ctx.clip();
+      if (bgTex) {
+        // 折射：纹理位移重贴（半透明 → 底下完整便签透出）
+        ctx.globalAlpha = glassAlpha * 0.4;
+        ctx.drawImage(bgTex, cl.rx, cl.ry);
+        ctx.globalAlpha = glassAlpha;
+      }
+      // 玻璃极淡冷色调
+      ctx.fillStyle = "rgba(206,224,250,0.05)";
       ctx.fill();
       ctx.restore();
     }
+
+    // ---- 裂纹亮线（玻璃边缘受光）----
+    if (glassAlpha > 0.01) {
+      ctx.strokeStyle = `rgba(255,255,255,${(0.5 * glassAlpha).toFixed(3)})`;
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      for (const [a, b] of segs) {
+        ctx.moveTo(allPts[a].x, allPts[a].y);
+        ctx.lineTo(allPts[b].x, allPts[b].y);
+      }
+      ctx.stroke();
+    }
+
+    // ---- 冲击瞬间亮闪（冲击点放射短光线，快速消失）----
+    if (age < impactMs) {
+      const t = age / impactMs;
+      ctx.strokeStyle = `rgba(255,255,255,${((1 - t) * 0.6).toFixed(3)})`;
+      ctx.lineWidth = 1.5;
+      for (let i = 0; i < rayCount; i++) {
+        const f = 0.28 + t * 0.16;
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(px + (rayEnd[i].x - px) * f, py + (rayEnd[i].y - py) * f);
+        ctx.stroke();
+      }
+    }
     ctx.globalAlpha = 1;
+
+    // ---- 便签本体末段一起淡出（关闭收尾）----
+    const noteFadeStart = wipe * 0.7;
+    if (age > noteFadeStart) {
+      const t = Math.min(1, (age - noteFadeStart) / Math.max(1, duration - noteFadeStart));
+      root.style.opacity = Math.max(0, 1 - t * t * (3 - 2 * t)).toFixed(3);
+    }
 
     if (age >= duration) {
       stopLoop();
@@ -331,13 +446,12 @@ function runGlass(
     if (!endedLocal) rafId = requestAnimationFrame(step);
   };
 
-  // 颜色场就绪后再启动循环（纯色主题立即；背景图 ≤140ms 上限解码）；
-  // 启动时才裁空便签本体（避免颜色场未就绪时出现"内容消失、碎块未出"的空白闪帧）
-  buildColorField(root, w, h).then((f) => {
+  // 背景纹理就绪后再启动（底色立即；背景图 ≤140ms 上限解码）。
+  // 便签内容不裁空：玻璃只是盖在上面的一层，背景全程完整可见。
+  buildBgTexture(root, w, h).then((tex) => {
     if (endedLocal) return;
-    field = f;
+    bgTex = tex;
     try {
-      root.style.clipPath = "inset(0 0 100% 0)";
       root.style.boxShadow = "none";
       root.style.opacity = "";
     } catch {
