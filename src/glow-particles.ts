@@ -572,6 +572,10 @@ function runGlow(
   const regions: DissolveRegion[] = [];
   // 匀速扩散系数：越大前沿越慢（粒子相对更容易超过前沿 → 重叠越明显）
   const kSpread = 1.6;
+  // 风向（由 windPx 推导）：>0 右吹 / <0 左吹 / 0 无风（粒子向（左/右）上方飘）
+  const windDir = windPx > 0 ? 1 : windPx < 0 ? -1 : 0;
+  // 风向倾斜强度：0~0.8（0 = 无风不倾斜）——顺风方向粒子化更快、逆风方向更慢/几乎不散
+  const windLean = windDir === 0 ? 0 : 0.55 + 0.25 * Math.min(1, Math.abs(windPx) / 120);
   const noisePhase = Math.random() * 100; // 噪声相位随机 → 每次前沿弯曲不同
   const makeRegion = (x: number, y: number, t0: number): DissolveRegion => ({
     x,
@@ -613,6 +617,16 @@ function runGlow(
     const dy = ny - r.y;
     // 向上略慢（×1.8：粒子上升更快 → 穿过未消散区）、向下略快（×0.85）
     let eff = Math.hypot(dx, dy * (dy < 0 ? 1.8 : 0.85));
+    // 风向倾斜：风朝（左/右）上方吹 → 顺风方向扩散快（eff 小 = 粒子化快）、
+    // 逆风方向扩散慢（eff 大 = 几乎不散）
+    if (windLean > 0) {
+      const len = Math.hypot(dx, dy) || 1;
+      const wnorm = Math.hypot(windDir, 1);
+      const wx = windDir / wnorm; // 风水平分量（右 +、左 -）
+      const wy = -1 / wnorm;      // 风竖直分量（向上 = -y）
+      const dot = (dx / len) * wx + (dy / len) * wy; // 顺风 +1、逆风 -1
+      eff *= 1 - windLean * dot; // 顺风 ×(1-lean)（快）、逆风 ×(1+lean)（慢）
+    }
     const theta = Math.atan2(dy, dx);
     // 花瓣状角度调制 → 扩散形状不规则（非圆形）
     const petal =
