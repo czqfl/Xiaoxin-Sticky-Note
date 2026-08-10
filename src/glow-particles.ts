@@ -41,8 +41,13 @@ let cancelGlowFn: (() => void) | null = null;
 
 /** 立即中止粒子动画并复原页面（呼出打断关闭时调用——不触发 onDone，窗口保持显示）。
  *  若粒子层窗口在播放（remote 模式），一并通知其停止隐藏。 */
+/** 本窗口最近一次发起的粒子动画序号（粒子层用它忽略过期事件——快速呼出/关闭竞态）。
+ *  粒子层是全局单例，particles-start / particles-cancel 是两个独立事件通道、顺序不保证：
+ *  快速"关闭→呼出→关闭"时旧 cancel 可能晚于新 start 到达，若不带序号会误停新动画。 */
+let lastGlowSeq = 0;
+
 export function cancelGlowParticles(): void {
-  emit("particles-cancel").catch(() => {});
+  emit("particles-cancel", { seq: lastGlowSeq }).catch(() => {});
   const c = cancelGlowFn;
   cancelGlowFn = null;
   if (c) {
@@ -156,6 +161,8 @@ export function requestGlowDissolveClose(
     }
     if (aborted) return;
     try {
+      // 本动画序号（粒子层据此忽略过期 cancel——快速呼出/关闭竞态）
+      const mySeq = ++lastGlowSeq;
       // 便签窗口 dpr（物理 px ↔ CSS px 换算）：提到外层供 emit dprNote 使用
       const noteDpr = Math.min(window.devicePixelRatio || 1, 2);
       // remote：提前并行获取颜色场与窗口位置（emit 不再 await，粒子层与 mask 几乎同步开始）
@@ -171,7 +178,6 @@ export function requestGlowDissolveClose(
         if (!pos) {
           // 拿不到便签屏幕位置：绝不能带 (0,0) 偏移让粒子生成在屏幕左上角（完全错位）→
           // 回退 self 模式（粒子画在便签窗口内，与 mask 天然同坐标、零偏移）。
-          console.log("[GP-DIAG] outerPosition 失败 → 回退 self 模式");
           useRemote = false;
         } else {
           layerField = field;
@@ -179,7 +185,6 @@ export function requestGlowDissolveClose(
           // 便签局部 CSS px × resp + origin(物理) = 屏幕物理 px，与缩放解耦。
           layerOrigin.x = pos.x;
           layerOrigin.y = pos.y;
-          console.log("[GP-DIAG] 便签 outerPos(物理)=(" + pos.x + "," + pos.y + ") noteDpr=" + noteDpr + " innerSize=" + w + "x" + h + " useRemote=" + useRemote);
         }
       }
       if (aborted) return;
@@ -194,6 +199,7 @@ export function requestGlowDissolveClose(
         const tfield = lastTField;
         emit("particles-start", {
           type: "particle",
+          seq: mySeq, // 动画序号：粒子层忽略过期事件（快速呼出/关闭竞态）
           originX: layerOrigin.x,
           originY: layerOrigin.y,
           width: window.innerWidth,

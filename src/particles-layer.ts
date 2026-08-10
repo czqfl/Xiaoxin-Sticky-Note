@@ -35,6 +35,8 @@ interface ParticleLayerStart {
   startAt?: number;
   /** 便签窗口 devicePixelRatio（物理 px ↔ CSS px 换算：网格×resp、取色/速度用） */
   dprNote?: number;
+  /** 动画序号（便签侧递增）：快速呼出/关闭竞态时忽略过期的 cancel 事件 */
+  seq?: number;
 }
 
 let canvas: HTMLCanvasElement | null = null;
@@ -52,8 +54,8 @@ let lastPaint = 0;
 let layerKind: LayerKind = "particle";
 /** 便签窗口 devicePixelRatio（emit 事件 dprNote）：物理 px ↔ CSS px 换算（网格/取色/速度） */
 let noteDpr = 1;
-/** 屏幕可视化诊断面板（定位粒子错位用；截图即可看到数值） */
-let diagEl: HTMLDivElement | null = null;
+/** 当前动画序号（来自 particles-start 的 seq）：particles-cancel 只停匹配序号的动画 */
+let layerSeq = 0;
 
 // ---- 粒子池（SoA；particle 模式动态增减，cylinder/vortex 固定池重生）----
 let maxP = 1024;
@@ -518,7 +520,12 @@ async function calibrateLayerWindow(): Promise<void> {
 }
 
 async function startLayer(p: ParticleLayerStart): Promise<void> {
+  // 覆盖旧动画：快速"关闭→呼出→关闭"时粒子层可能还有上一轮循环在跑（rAF+backupId），
+  // 必须先停掉，否则双循环重复更新/绘制 → 粒子异常/部分区域无粒子。stopLayer 会 hide，
+  // 由下方 show 重新覆盖（透明窗口无感）。
+  if (layerActive || !layerEnded) stopLayer();
   layerKind = p.type || "particle";
+  layerSeq = p.seq ?? 0; // 记录本动画序号：过期 cancel 不匹配则忽略
   layerStartAt = p.startAt ?? Date.now(); // 便签侧用 Date.now()（系统时钟）记录，见 frame 注释
   layerDensity = Math.max(0, Math.min(100, p.density ?? 50));
   k = Math.max(0.25, Math.min(4, 100 / Math.max(10, p.speed ?? 100)));
@@ -537,28 +544,7 @@ async function startLayer(p: ParticleLayerStart): Promise<void> {
   started = false;
   // ⚠️ 不在动画前 calibrate/setSize：粒子层窗口 transparent+shadow(false) 对 setSize 敏感，
   // 每次 setSize 可能触发 WebView2 渲染重建/白屏，粒子 canvas 被重置 → 表现为"偶尔错位/
-  // 卡了一下然后消失"。mount 时已 calibrate 一次保证窗口全屏；这里只更新 diag，不再碰窗口。
-  try {
-    const win = getCurrentWindow();
-    const inner = await win.innerSize().catch(() => null);
-    const outer = await win.outerPosition().catch(() => null);
-    let eminX = Infinity, emaxX = -Infinity, eminY = Infinity, emaxY = -Infinity;
-    for (let i = 0; i < ecount; i++) {
-      if (emitX[i] < eminX) eminX = emitX[i];
-      if (emitX[i] > emaxX) emaxX = emitX[i];
-      if (emitY[i] < eminY) eminY = emitY[i];
-      if (emitY[i] > emaxY) emaxY = emitY[i];
-    }
-    const lines = [
-      "【粒子层诊断】 origin(物理)=" + originX.toFixed(0) + "," + originY.toFixed(0) + " noteDpr=" + noteDpr.toFixed(2) + " layerDpr=" + (window.devicePixelRatio || 1).toFixed(2),
-      "screen=" + window.screen.width + "x" + window.screen.height + " canvas=" + canvas?.width + "x" + canvas?.height,
-      "窗口实际 innerSize=" + (inner ? inner.width + "x" + inner.height : "null") + " outerPos=" + (outer ? outer.x + "," + outer.y : "null"),
-      "便签尺寸=" + rectW + "x" + rectH + " 发射网格(物理)=x[" + eminX.toFixed(0) + ".." + emaxX.toFixed(0) + "] y[" + eminY.toFixed(0) + ".." + emaxY.toFixed(0) + "]",
-      "age偏移=" + (Date.now() - layerStartAt) + "ms 可见=" + await win.isVisible().catch(() => "err"),
-    ];
-    console.log("[PL-DIAG]", lines.join(" | "));
-    if (diagEl) diagEl.textContent = lines.join("\n");
-  } catch (e) { console.log("[PL-DIAG] 诊断异常", e); }
+  // 卡了一下然后消失"。mount 时已 calibrate 一次保证窗口全屏，这里不再碰窗口。
   getCurrentWindow().show().catch(() => {});
   rafId = requestAnimationFrame(step);
   backupId = window.setInterval(() => {
@@ -673,10 +659,6 @@ export async function mountParticlesLayer(): Promise<void> {
   canvas.style.zIndex = "2147483647";
   canvas.style.pointerEvents = "none";
   document.body.appendChild(canvas);
-  // 屏幕可视化诊断面板（左上角黑底绿字，截图即可看到诊断数值）
-  diagEl = document.createElement("div");
-  diagEl.style.cssText = "position:fixed;left:8px;top:8px;z-index:2147483646;background:rgba(0,0,0,0.85);color:#0f0;font:11px/1.6 monospace;padding:6px 10px;border-radius:4px;pointer-events:none;white-space:pre;";
-  document.body.appendChild(diagEl);
   if (!setupGL()) {
     console.error("粒子层 WebGL 初始化失败");
     return;
@@ -684,7 +666,11 @@ export async function mountParticlesLayer(): Promise<void> {
   await listen<ParticleLayerStart>("particles-start", (e) => {
     startLayer(e.payload);
   });
-  await listen("particles-cancel", () => {
+  await listen<{ seq?: number }>("particles-cancel", (e) => {
+    // 快速"关闭→呼出→关闭"时旧 cancel 可能晚于新 start 到达：只停序号匹配的动画，
+    // 过期 cancel 忽略（避免误停刚启动的新动画 → 部分区域无粒子）。
+    const seq = e?.payload?.seq ?? 0;
+    if (seq !== 0 && seq !== layerSeq) return;
     if (layerActive || !layerEnded) stopLayer();
   });
 }
