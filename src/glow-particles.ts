@@ -163,13 +163,14 @@ export function requestGlowDissolveClose(
     }
     if (aborted) return;
     try {
+      // 便签窗口 dpr（物理 px ↔ CSS px 换算）：提到外层，onStart 回调（emit dprNote）也能访问
+      const noteDpr = Math.min(window.devicePixelRatio || 1, 2);
       // remote：提前并行获取颜色场与窗口位置（emit 不再 await，粒子层与 mask 几乎同步开始）
       let layerField: ColorField | null = null;
       let layerOrigin = { x: 0, y: 0 };
       if (useRemote && !aborted) {
         const w = window.innerWidth;
         const h = window.innerHeight;
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
         const [field, pos] = await Promise.all([
           buildColorField(root, w, h),
           getNoteWindowPos(), // outerPosition 失败会重试；拿不到直接回退 self（见下）
@@ -180,8 +181,10 @@ export function requestGlowDissolveClose(
           useRemote = false;
         } else {
           layerField = field;
-          layerOrigin.x = pos.x / dpr;
-          layerOrigin.y = pos.y / dpr;
+          // 物理像素统一：origin 保持 pos 的物理 px，粒子发射网格 = 便签局部(物理) + origin(物理)。
+          // 不再 /dpr 转 CSS —— 跨窗口/跨缩放/多显示器下物理坐标全局一致。
+          layerOrigin.x = pos.x;
+          layerOrigin.y = pos.y;
         }
       }
       if (aborted) return;
@@ -204,7 +207,7 @@ export function requestGlowDissolveClose(
             fieldW: field?.fw ?? 8,
             fieldH: field?.fh ?? 8,
             fieldData: field ? Array.from(field.data) : [],
-            // 直接传「已含 origin 平移的屏幕坐标发射网格 + 各自 T 时刻 + 分桶」，
+            // 直接传「已含 origin 平移的物理 px 屏幕坐标发射网格 + 各自 T 时刻 + 分桶」，
             // 粒子层原样使用 → 粒子出生点 = 消散点（单一轨迹源），不再二次重建位置。
             emitX: emitGrid ? Array.from(emitGrid.ex) : [],
             emitY: emitGrid ? Array.from(emitGrid.ey) : [],
@@ -213,6 +216,8 @@ export function requestGlowDissolveClose(
             density: particleDensity,
             speed,
             startAt: realStartAt,
+            // 便签窗口 dpr：粒子层把物理坐标换算回 CSS 取色/速度时用
+            dprNote: noteDpr,
           }).catch(() => {});
         });
     } catch (e) {
@@ -508,10 +513,13 @@ function runGlow(
   let field: ColorField | null = null;
   const sampleThemeColor = (x: number, y: number): [number, number, number] => {
     if (!field) return [235, 240, 255]; // 兜底亮白
-    let fx = Math.round((x / w) * field.fw);
+    // 物理像素统一后：x/y 为物理 px（相对窗口），/dpr 转回 CSS px 再对颜色场采样
+    const lx = x / dpr;
+    const ly = y / dpr;
+    let fx = Math.round((lx / w) * field.fw);
     if (fx < 0) fx = 0;
     else if (fx >= field.fw) fx = field.fw - 1;
-    let fy = Math.round((y / h) * field.fh);
+    let fy = Math.round((ly / h) * field.fh);
     if (fy < 0) fy = 0;
     else if (fy >= field.fh) fy = field.fh - 1;
     const idx = (fy * field.fw + fx) * 4;
@@ -739,14 +747,15 @@ function runGlow(
   let ei = 0;
   let maxEmitT = 0;
   // remote：屏幕坐标偏移（粒子层窗口已全屏铺满，原点 = 屏幕左上角，直接 +origin）
+  // 物理像素统一：nx/ny 为便签局部 CSS px，× dpr 转物理 px，再 + origin（物理 px）→ 屏幕物理 px。
   const ox = remote ? layerOriginX : 0;
   const oy = remote ? layerOriginY : 0;
   for (let iy = 0; iy < ecy; iy++) {
     for (let ix = 0; ix < ecx; ix++) {
       const nx = (ix + 0.5) * emitSpacing;
       const ny = (iy + 0.5) * emitSpacing;
-      emitX[ei] = nx + ox;
-      emitY[ei] = ny + oy;
+      emitX[ei] = nx * dpr + ox;
+      emitY[ei] = ny * dpr + oy;
       const T = dissolveTimeAt(nx, ny);
       emitT[ei] = T;
       if (T > maxEmitT) maxEmitT = T;
@@ -803,13 +812,13 @@ function runGlow(
     px[i] = x;
     py[i] = y;
     pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // 随机左右偏转 ±55°
-    pv0[i] = 10 + Math.random() * 20; // 初速度更低（px/s）：缓慢起飘，节奏更舒缓
-    pv1[i] = 330; // 加速度进一步降低（px/s²）：整体上升更平缓、更具漂浮感
+    pv0[i] = (10 + Math.random() * 20) * dpr; // 初速更低（px/s）：缓慢起飘，节奏更舒缓（×resp 转物理 px/s）
+    pv1[i] = 330 * dpr; // 加速度进一步降低（px/s²）：整体上升更平缓、更具漂浮感（×resp 转物理）
     plife[i] = life;
     page[i] = 0;
     psize[i] = 1.8; // 亮核 1.8px
     pseed[i] = Math.random() * Math.PI * 2;
-    psway[i] = (Math.random() - 0.5) * 60; // ±30 px/s 恒定向漂移（横向更自由）
+    psway[i] = (Math.random() - 0.5) * 60 * dpr; // ±30 px/s 恒定向漂移（横向更自由，×resp 转物理）
     const [r, g, b] = sampleThemeColor(x, y);
     pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
   };
@@ -921,7 +930,7 @@ function runGlow(
         const speed = pv0[i] + pv1[i] * (a / 1000);
         const dx = Math.sin(pang[i]);
         const dy = -Math.cos(pang[i]); // 向上为负 y
-        const sway = Math.sin(a * 0.004 + pseed[i]) * 40; // 水平轻摆 ±40px/s（轨迹灵动）
+        const sway = Math.sin(a * 0.004 + pseed[i]) * 40 * dpr; // 水平轻摆 ±40px/s（×resp 转物理）
         px[i] += (dx * speed + psway[i] + sway) * dt;
         py[i] += dy * speed * dt;
         const t = 1 - u;
@@ -929,8 +938,9 @@ function runGlow(
         if (alpha < 0.02) continue;
         const haloR = psize[i] * 1.25;
         const o = drawCount * 7;
-        glData[o] = px[i] * dpr;
-        glData[o + 1] = py[i] * dpr;
+        // px/py 已是物理 px（emit 网格物理化），直接输出，u_res = canvas.width（物理 px）
+        glData[o] = px[i];
+        glData[o + 1] = py[i];
         glData[o + 2] = haloR * 2 * dpr;
         glData[o + 3] = alpha;
         glData[o + 4] = pr[i];
