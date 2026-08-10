@@ -769,8 +769,8 @@ function runGlow(
     px[i] = x;
     py[i] = y;
     pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // 随机左右偏转 ±55°
-    pv0[i] = 20 + Math.random() * 40; // 初速度略随机（px/s，缓慢起飘，节奏更自然）
-    pv1[i] = 650; // 加速度相同（px/s²，明显加速）
+    pv0[i] = 6 + Math.random() * 10; // 初速度略随机（px/s，缓慢起飘；原 20~60 太快）
+    pv1[i] = 180; // 加速度（px/s²，明显加速但不过快；原 650 在 1s 后 ~700px/s 直线冲走）
     plife[i] = life;
     page[i] = 0;
     psize[i] = 1.8; // 亮核 1.8px
@@ -889,16 +889,26 @@ function runGlow(
         }
         // 等加速上升 + 轻柔水平摆动：粒子越过便签矩形边界后继续自由飘散，
         // 无边界销毁约束，仅靠寿命末段透明度衰减自然淡出
-        const speed = pv0[i] + pv1[i] * (a / 1000);
+        // 慢速漂浮上升 + 多频强摆动（与 remote 粒子层同一套运动模型，观感一致）：
+        // 速度包络走缓避免直线冲走；横向三频正弦叠加出复杂曲线路径，纵向起伏漂浮。
+        const aSec = a / 1000;
+        const spdRamp = Math.min(1, aSec / 0.9);
+        const speed = (pv0[i] + pv1[i] * spdRamp) * (1 + 0.3 * Math.sin(a * 0.0021 + pseed[i] * 3));
         const dx = Math.sin(pang[i]);
         const dy = -Math.cos(pang[i]); // 向上为负 y
-        const sway = Math.sin(a * 0.004 + pseed[i]) * 40; // 水平轻摆 ±40px/s（轨迹灵动）
-        px[i] += (dx * speed + psway[i] + sway) * dt;
-        py[i] += dy * speed * dt;
+        const s1 = Math.sin(a * 0.0025 + pseed[i]) * 85;
+        const s2 = Math.sin(a * 0.009 + pseed[i] * 2.3) * 55;
+        const s3 = Math.sin(a * 0.024 + pseed[i] * 4.1) * 20;
+        const swayX = psway[i] + s1 + s2 + s3;
+        const bobY = Math.sin(a * 0.0062 + pseed[i] * 1.7) * 55 * (0.35 + 0.65 * spdRamp);
+        px[i] += (dx * speed + swayX) * dt;
+        py[i] += (dy * speed + bobY) * dt;
         const t = 1 - u;
-        const alpha = t * Math.pow(t, 0.2) * globalFade;
+        const twinkle = 0.8 + 0.2 * Math.sin(a * 0.02 + pseed[i] * 5);
+        const alpha = t * Math.pow(t, 0.2) * globalFade * twinkle;
         if (alpha < 0.02) continue;
-        const haloR = psize[i] * 1.25;
+        const pulse = 1 + 0.22 * Math.sin(a * 0.007 + pseed[i] * 2);
+        const haloR = psize[i] * pulse * 1.3;
         const o = drawCount * 7;
         glData[o] = px[i] * dpr;
         glData[o + 1] = py[i] * dpr;

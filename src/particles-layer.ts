@@ -143,8 +143,8 @@ const spawn = (inst: PAnim, sx: number, sy: number, age: number): void => {
   inst.py[i] = sy;
   inst.pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // ±55°
   // —— 增强飘动：放慢直线飞射（速度包络走缓），给摆动让出视觉空间 ——
-  inst.pv0[i] = (6 + Math.random() * 12) * inst.noteDpr; // 初速 6~18 px/s（原 10~30）
-  inst.pv1[i] = 190 * inst.noteDpr;                       // 加速度 190 px/s²（原 330，压低直线感）
+  inst.pv0[i] = (4 + Math.random() * 7) * inst.noteDpr; // 初速 4~11 px/s（原 6~18，再放慢上升）
+  inst.pv1[i] = 90 * inst.noteDpr;                       // 加速度 90 px/s²（原 190，慢速漂浮上升）
   inst.plife[i] = life;
   inst.page[i] = 0;
   inst.psize[i] = 1.9 + Math.random() * 0.7;              // 尺寸 1.9~2.6（原固定 1.8，微增且带随机）
@@ -357,7 +357,7 @@ const step = (now: number): void => {
   if (!layerEnded) rafId = requestAnimationFrame(step);
 };
 
-function startLayer(p: ParticleLayerStart): void {
+async function startLayer(p: ParticleLayerStart): Promise<void> {
   const now = Date.now();
   // 防御：清理所有已过期实例（超过各自 duration 仍未移除——兜底防历史残留，
   // 避免"历史位置出现粒子"）
@@ -383,13 +383,28 @@ function startLayer(p: ParticleLayerStart): void {
   }
   // ⚠️ 不在这里 setSize：粒子层窗口 transparent+shadow(false) 对 setSize 敏感，
   // 可能触发 WebView2 渲染重建/白屏。mount 时已 calibrate 一次保证窗口全屏。
-  getCurrentWindow().show().catch(() => {});
+  const win = getCurrentWindow();
+  try {
+    await win.show(); // 先显示
+  } catch {
+    /* ignore */
+  }
   // —— 关键：粒子层与便签窗口同为 alwaysOnTop，但 show() 不会激活 focusable:false
   // 的窗口，聚焦中的便签仍压在粒子层之上 → 粒子飘进便签未擦除（不透明）区域时被
-  // 便签内容遮住，观感像“顶到墙顿一下、飞出便签顶部后又继续往上飞”。
-  // 重新置顶一次（SetWindowPos HWND_TOPMOST）把粒子层抬到置顶层最上面，
-  // 粒子全程在便签之上可见、连续飘散无遮挡。
-  getCurrentWindow().setAlwaysOnTop(true).catch(() => {});
+  // 便签内容遮住，观感像"顶到墙顿一下、飞出便签顶部后又继续往上飞"。
+  // 必须等 show() 完成后再 setAlwaysOnTop(true)（SetWindowPos HWND_TOPMOST，抬到置顶层
+  // 最上面）；若两条 IPC 乱序（先置顶后显示），show 可能又把它压回置顶层底部。
+  try {
+    await win.setAlwaysOnTop(true);
+  } catch {
+    /* ignore */
+  }
+  // 尽力聚焦抬升（focusable:false 可能无效，失败无害）
+  win.setFocus().catch(() => {});
+  // 防御性再置顶一次：动画开始的瞬间便签窗口若被再次激活/抬升，仍能盖过它
+  window.setTimeout(() => {
+    win.setAlwaysOnTop(true).catch(() => {});
+  }, 120);
 }
 
 /** 校准粒子层窗口几何：锚定屏幕左上角 (0,0) 并铺满整屏，同步 canvas 缓冲尺寸。
@@ -546,7 +561,7 @@ export async function mountParticlesLayer(): Promise<void> {
     return;
   }
   await listen<ParticleLayerStart>("particles-start", (e) => {
-    startLayer(e.payload);
+    startLayer(e.payload).catch((err) => console.error("粒子层启动失败:", err));
   });
   await listen<{ seq?: number; originX?: number; originY?: number }>("particles-cancel", (e) => {
     const seq = e?.payload?.seq ?? 0;
