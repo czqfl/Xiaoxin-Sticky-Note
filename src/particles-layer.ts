@@ -535,11 +535,9 @@ async function startLayer(p: ParticleLayerStart): Promise<void> {
   layerEnded = false;
   layerActive = true;
   started = false;
-  // 动画前校准窗口几何（幂等）：mount 时 setSize 可能失败 → 窗口非全屏 → 粒子完全错位。
-  // 校准完成后再开始渲染（粒子层窗口已由便签侧提前 show，透明无感）。
-  await calibrateLayerWindow();
-  if (layerEnded) return;
-  // ===== 诊断：控制台 + 屏幕面板（截图即可看到数值，无需终端）=====
+  // ⚠️ 不在动画前 calibrate/setSize：粒子层窗口 transparent+shadow(false) 对 setSize 敏感，
+  // 每次 setSize 可能触发 WebView2 渲染重建/白屏，粒子 canvas 被重置 → 表现为"偶尔错位/
+  // 卡了一下然后消失"。mount 时已 calibrate 一次保证窗口全屏；这里只更新 diag，不再碰窗口。
   try {
     const win = getCurrentWindow();
     const inner = await win.innerSize().catch(() => null);
@@ -561,7 +559,6 @@ async function startLayer(p: ParticleLayerStart): Promise<void> {
     console.log("[PL-DIAG]", lines.join(" | "));
     if (diagEl) diagEl.textContent = lines.join("\n");
   } catch (e) { console.log("[PL-DIAG] 诊断异常", e); }
-  // ===== 诊断结束 =====
   getCurrentWindow().show().catch(() => {});
   rafId = requestAnimationFrame(step);
   backupId = window.setInterval(() => {
@@ -649,21 +646,23 @@ function setupGL(): boolean {
 
 export async function mountParticlesLayer(): Promise<void> {
   const win = getCurrentWindow();
+  // 启动时校准窗口几何（currentMonitor 物理分辨率 + PhysicalSize）—— 一次就够，
+  // 后续动画中不再 setSize（避免 transparent+shadow(false) 窗口 setSize 触发 WebView2 重建）。
+  // 若窗口初始化未就绪 setSize 失败，再重试一次。
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  await calibrateLayerWindow();
   const ww = window.screen.width || window.innerWidth;
   const hh = window.screen.height || window.innerHeight;
-  // 初始校准（动画开始前 startLayer 还会再校准一次兜底）：物理尺寸，与 resp 缩放无关
-  dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const pw = Math.max(1, Math.round(ww * dpr));
-  const ph = Math.max(1, Math.round(hh * dpr));
-  await win.setPosition(new LogicalPosition(0, 0)).catch(() => {});
-  await win.setSize(new PhysicalSize(pw, ph)).catch(() => {});
   win.setIgnoreCursorEvents(true).catch(() => {});
   document.body.style.margin = "0";
   document.body.style.overflow = "hidden";
   document.body.style.background = "transparent";
   canvas = document.createElement("canvas");
-  canvas.width = pw;
-  canvas.height = ph;
+  // canvas 尺寸与 calibrate 后的窗口物理尺寸一致（calibrateLayerWindow 同步了 canvas）
+  const fallbackPw = Math.max(1, Math.round(ww * dpr));
+  const fallbackPh = Math.max(1, Math.round(hh * dpr));
+  canvas.width = canvas?.width || fallbackPw;
+  canvas.height = canvas?.height || fallbackPh;
   canvas.style.position = "fixed";
   canvas.style.left = "0";
   canvas.style.top = "0";
