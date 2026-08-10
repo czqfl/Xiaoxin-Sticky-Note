@@ -159,11 +159,11 @@ export function requestGlowDissolveClose(
         }
       }
       if (aborted) return;
-      const animStartAt = performance.now(); // 动画开始时刻（粒子层用同一基准计算 age，严格同步）
+      const animStartAt = Date.now(); // 动画开始时刻（系统时钟，粒子层用同一基准计算 age，跨窗口严格同步）
       stopRun = runGlow(root, particleDensity, speed, () => {
         window.clearTimeout(watchdog);
         safeDone();
-      }, useRemote ? "remote" : "self");
+      }, useRemote ? "remote" : "self", animStartAt);
       // remote：立即发 start（颜色场/位置已就绪），粒子层与 mask 同步开始
       if (useRemote && !aborted) {
         const field = layerField;
@@ -334,13 +334,17 @@ function buildColorField(root: HTMLElement, w: number, h: number): Promise<Color
   });
 }
 
-/** 播放一次粒子光效消散动画。 */
+/** 播放一次粒子光效消散动画。
+ * @param baseStartAt 动画开始时刻（Date.now() 系统时钟，与传给粒子层的 startAt 同一基准）。
+ *                    便签 mask 的 age 用它计算，保证与粒子层严格同拍（跨窗口时间原点不同，
+ *                    performance.now() 传过去会恒偏 Δ → 粒子涌出/提前消失）。 */
 function runGlow(
   root: HTMLElement,
   particleDensity: number,
   speed: number,
   onDone: () => void,
   mode: "self" | "remote" = "self",
+  baseStartAt = 0,
 ): () => void {
   const myGen = ++glowGen; // 本动画实例代次：作废上一轮遗留的延时清理
   const remote = mode === "remote";
@@ -777,12 +781,15 @@ function runGlow(
     if (endedLocal) return;
     if (!started) {
       started = true;
-      start = now;
+      // start 锚定 baseStartAt（= 传给粒子层的 startAt，Date.now() 系统时钟）：
+      // mask 与粒子层 age 严格同基准；未传时回退首帧时刻（self 模式无粒子层）
+      start = baseStartAt || Date.now();
       prevNow = now;
     }
     const dt = Math.min(0.05, Math.max(0.001, (now - prevNow) / 1000));
     prevNow = now;
-    const age = now - start;
+    // age 用 Date.now()（与 start 同一时钟）：与粒子层严格同基准（见 runGlow 注释）
+    const age = Date.now() - start;
 
     // ---- 推进 mask 消散 + 发射点按各自 T 时刻生成粒子 ----
     pushMask(age, false);

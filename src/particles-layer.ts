@@ -313,8 +313,12 @@ const frame = (now: number): void => {
   const dt = Math.min(0.05, Math.max(0.001, (now - lastPaint) / 1000));
   lastPaint = now;
   // 动画 age 用便签动画开始时刻（startAt）为基准：粒子层与便签 mask 严格同步，
-  // 不受粒子层收到事件/窗口显示的延迟影响（否则粒子化总比便签消散慢）
-  const age = now - layerStartAt;
+  // 不受粒子层收到事件/窗口显示的延迟影响（否则粒子化总比便签消散慢）。
+  // ⚠️ age 必须用 Date.now()（系统时钟）：startAt 是便签窗口传来的时间戳，若用本窗口的
+  // performance.now() 减去它，两个 WebView 页面时间原点不同会产生固定偏差 Δ →
+  // 粒子层首帧涌出前 Δ 的发射桶、提前达到 duration 清场（表现为便签外冒粒子/提前消失）。
+  // dt 仍用 rAF 帧间隔（窗口内相对，不受影响）。
+  const age = Date.now() - layerStartAt;
   const globalFade = age > duration - 200 ? Math.max(0, (duration - age) / 200) : 1;
 
   if (!gl) return;
@@ -471,9 +475,36 @@ const step = (now: number): void => {
   if (!layerEnded) rafId = requestAnimationFrame(step);
 };
 
-function startLayer(p: ParticleLayerStart): void {
+/** 动画前校准粒子层窗口几何：锚定屏幕左上角 (0,0) 并铺满整屏，同步 canvas 缓冲尺寸。
+ *  关键：mount 时（app 启动、窗口未就绪）setSize 可能静默失败，窗口会停在 tauri.conf.json
+ *  的固定 1920×1080 → 粒子屏幕坐标与窗口几何错位（压缩/偏移/完全错位）。每次动画开始前
+ *  重新校准（resizable:true 时 setSize 才生效）。不改动画逻辑，仅修窗口几何。 */
+async function calibrateLayerWindow(): Promise<void> {
+  const win = getCurrentWindow();
+  const ww = Math.round(window.screen.width || window.innerWidth || 1920);
+  const hh = Math.round(window.screen.height || window.innerHeight || 1080);
+  await win.setPosition(new LogicalPosition(0, 0)).catch(() => {});
+  await win.setSize(new LogicalSize(ww, hh)).catch(() => {});
+  const pw = Math.max(1, Math.round(ww * dpr));
+  const ph = Math.max(1, Math.round(hh * dpr));
+  if (canvas && (canvas.width !== pw || canvas.height !== ph)) {
+    // canvas 尺寸变更会重置 WebGL context → 重建 GL 基础设施（program/buffer/attrib）
+    canvas.width = pw;
+    canvas.height = ph;
+    gl = null;
+    buf = null;
+    aPosLoc = 0;
+    aParamLoc = 0;
+    aColorLoc = 0;
+    if (!setupGL()) {
+      console.error("粒子层 WebGL 重建失败");
+    }
+  }
+}
+
+async function startLayer(p: ParticleLayerStart): Promise<void> {
   layerKind = p.type || "particle";
-  layerStartAt = p.startAt ?? performance.now();
+  layerStartAt = p.startAt ?? Date.now(); // 便签侧用 Date.now()（系统时钟）记录，见 frame 注释
   layerDensity = Math.max(0, Math.min(100, p.density ?? 50));
   k = Math.max(0.25, Math.min(4, 100 / Math.max(10, p.speed ?? 100)));
   if (layerKind === "particle") {
@@ -489,6 +520,10 @@ function startLayer(p: ParticleLayerStart): void {
   layerEnded = false;
   layerActive = true;
   started = false;
+  // 动画前校准窗口几何（幂等）：mount 时 setSize 可能失败 → 窗口非全屏 → 粒子完全错位。
+  // 校准完成后再开始渲染（粒子层窗口已由便签侧提前 show，透明无感）。
+  await calibrateLayerWindow();
+  if (layerEnded) return;
   getCurrentWindow().show().catch(() => {});
   rafId = requestAnimationFrame(step);
   backupId = window.setInterval(() => {
