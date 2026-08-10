@@ -200,8 +200,12 @@ const frame = (now: number): void => {
   const dt = Math.min(0.05, Math.max(0.001, (now - lastPaint) / 1000));
   lastPaint = now;
   // 动画 age 用便签动画开始时刻（startAt）为基准：粒子层与便签 mask 严格同步，
-  // 不受粒子层收到事件/窗口显示的延迟影响（否则粒子化总比便签消散慢）
-  const age = now - layerStartAt;
+  // 不受粒子层收到事件/窗口显示的延迟影响（否则粒子化总比便签消散慢）。
+  // ⚠️ age 必须用 Date.now()（系统时钟）计算：startAt 是便签窗口传来的时间戳，
+  // 若用本窗口的 performance.now() 减去它，两个 WebView 页面时间原点不同会产生
+  // 固定偏差 Δ → 首帧涌出前 Δ 的发射桶（便签外冒粒子）、fit 提前截断寿命（飘一点就
+  // 消失）、age 提前达到 duration（粒子瞬间清空像卡了一下）。dt 仍用 rAF 帧间隔（窗口内相对）。
+  const age = Date.now() - layerStartAt;
   const globalFade = age > duration - 200 ? Math.max(0, (duration - age) / 200) : 1;
 
   if (!gl) return;
@@ -285,7 +289,9 @@ const step = (now: number): void => {
 
 function startLayer(p: ParticleLayerStart): void {
   layerKind = p.type || "particle";
-  layerStartAt = p.startAt ?? performance.now();
+  // startAt 是便签窗口用 Date.now()（系统时钟）记录的动画开始时刻：本窗口也必须用
+  // Date.now() 计算 age（见 frame），跨窗口同步不受 performance.now() 时间原点差异影响。
+  layerStartAt = p.startAt ?? Date.now();
   layerDensity = Math.max(0, Math.min(100, p.density ?? 50));
   k = Math.max(0.25, Math.min(4, 100 / Math.max(10, p.speed ?? 100)));
   buildEmitGrid(p);

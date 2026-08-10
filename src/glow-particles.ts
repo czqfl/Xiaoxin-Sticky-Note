@@ -850,7 +850,8 @@ function runGlow(
     }
     const dt = Math.min(0.05, Math.max(0.001, (now - prevNow) / 1000));
     prevNow = now;
-    const age = now - start;
+    // age 用 Date.now() 计算（与 start 同一时钟）：与粒子层严格同基准（见 beginLoop 注释）
+    const age = Date.now() - start;
 
     // ---- 推进 mask 消散 + 发射点按各自 T 时刻生成粒子 ----
     pushMask(age, false);
@@ -955,8 +956,10 @@ function runGlow(
     setMask(maskCanvas.toDataURL());
     // 统一时间基准：start 锚定在本函数执行的此刻（= 传给粒子层的 startAt）。
     // 便签 mask 与 remote 粒子层用完全相同的 age = now - start 推进 → 粒子出生时刻
-    // 与 mask 擦除时刻严格对齐，消除「粒子层先走一帧」的相位差（轨迹不脱节）。
-    start = performance.now();
+    // 与 mask 擦除时刻严格对齐。⚠️ 必须用 Date.now()（系统时钟）：startAt 要跨窗口
+    // 传给粒子层，performance.now() 在不同 WebView 页面的时间原点不同（会产生固定
+    // 偏差：粒子涌出/提前消失），Date.now() 全系统一致，两窗严格同步。
+    start = Date.now();
     if (onStart) onStart(start);
     try {
       root.style.clipPath = "";
