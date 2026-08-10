@@ -38,6 +38,8 @@ interface ParticleLayerStart {
   density: number;
   /** 动画速度百分比（100=原速） */
   speed: number;
+  /** 风偏（CSS px/s，正=向右吹、负=向左吹、0=无风）：粒子整体朝（左/右）上方飘 */
+  wind?: number;
   /** 便签动画开始时刻（Date.now() 系统时钟）：粒子层用同一基准计算 age，保证与便签 mask 同步 */
   startAt?: number;
   /** 便签窗口 devicePixelRatio（物理 px ↔ CSS px 换算：网格×resp、取色/速度用） */
@@ -69,6 +71,8 @@ interface PAnim {
   k: number;
   /** 保留概率（0~1），由 density 换算 */
   keepProb: number;
+  /** 风偏（物理 px/s，正右/负左/0 无风）：粒子整体水平漂移 */
+  windPx: number;
   done: boolean;
   // ---- 粒子池（SoA；本实例独立）----
   maxP: number;
@@ -149,7 +153,8 @@ const spawn = (inst: PAnim, sx: number, sy: number, age: number): void => {
   inst.page[i] = 0;
   inst.psize[i] = 1.9 + Math.random() * 0.7;              // 尺寸 1.9~2.6（原固定 1.8，微增且带随机）
   inst.pseed[i] = Math.random() * Math.PI * 2;
-  inst.psway[i] = (Math.random() - 0.5) * 100 * inst.noteDpr; // 水平漂移偏置 ±50 px/s（原 ±30，加大）
+  // 水平漂移偏置：随机 ±50 px/s + 全局风偏（windPx，物理 px/s）→ 粒子整体朝（左/右）上飘
+  inst.psway[i] = (Math.random() - 0.5) * 100 * inst.noteDpr + inst.windPx;
   const [r, g, b] = sampleColor(inst, sx - inst.originX, sy - inst.originY);
   inst.pr[i] = r / 255; inst.pg[i] = g / 255; inst.pb[i] = b / 255;
 };
@@ -219,6 +224,7 @@ function buildAnim(p: ParticleLayerStart): PAnim {
     layerStartAt: p.startAt ?? Date.now(),
     duration: Math.round(2400 * k),
     k, keepProb,
+    windPx: (p.wind ?? 0) * noteDpr,
     done: false,
     maxP,
     px: new Float32Array(maxP), py: new Float32Array(maxP), pang: new Float32Array(maxP),

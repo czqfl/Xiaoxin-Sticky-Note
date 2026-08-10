@@ -206,11 +206,16 @@ export function requestGlowDissolveClose(
         }
       }
       if (aborted) return;
+      // 风（每次播放随机一次）：方向 -1 左吹 / 0 无风 / 1 右吹 + 风速随机 ——
+      // 粒子整体被吹向（左/右）上方飘，形成随机的斜向消散观感
+      const windRoll = Math.random();
+      const windDir = windRoll < 0.35 ? -1 : windRoll < 0.7 ? 1 : 0;
+      const windPx = windDir * (30 + (0.35 + Math.random() * 0.65) * 90); // CSS px/s（有风时 61~120，无风 0）
       const animStartAt = Date.now(); // 动画开始时刻（系统时钟，粒子层用同一基准计算 age，跨窗口严格同步）
       stopRun = runGlow(root, particleDensity, speed, () => {
         window.clearTimeout(watchdog);
         safeDone();
-      }, useRemote ? "remote" : "self", animStartAt);
+      }, useRemote ? "remote" : "self", animStartAt, windPx);
       // remote：立即发 start（颜色场/位置已就绪），粒子层与 mask 同步开始
       if (useRemote && !aborted) {
         const field = layerField;
@@ -230,6 +235,8 @@ export function requestGlowDissolveClose(
           tField: tfield?.data ?? [],
           density: particleDensity,
           speed,
+          // 风偏（CSS px/s，正右/负左/0 无风）：粒子层 ×noteDpr 转物理，粒子整体朝（左/右）上方飘
+          wind: windPx,
           startAt: animStartAt,
           // 便签窗口 dpr：粒子层物理 px ↔ CSS px 换算（网格 ×resp / 取色 / 速度）
           dprNote: noteDpr,
@@ -395,6 +402,7 @@ function runGlow(
   onDone: () => void,
   mode: "self" | "remote" = "self",
   baseStartAt = 0,
+  windPx = 0,
 ): () => void {
   const myGen = ++glowGen; // 本动画实例代次：作废上一轮遗留的延时清理
   const remote = mode === "remote";
@@ -924,7 +932,7 @@ function runGlow(
         const s1 = Math.sin(a * 0.0025 + pseed[i]) * 85;
         const s2 = Math.sin(a * 0.009 + pseed[i] * 2.3) * 55;
         const s3 = Math.sin(a * 0.024 + pseed[i] * 4.1) * 20;
-        const swayX = psway[i] + s1 + s2 + s3;
+        const swayX = psway[i] + s1 + s2 + s3 + windPx; // 整体风偏：粒子朝（左/右）上飘
         const bobY = Math.sin(a * 0.0062 + pseed[i] * 1.7) * 55 * (0.35 + 0.65 * spdRamp);
         px[i] += (dx * speed + swayX) * dt;
         py[i] += (dy * speed + bobY) * dt;
