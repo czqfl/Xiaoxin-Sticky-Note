@@ -142,13 +142,14 @@ const spawn = (inst: PAnim, sx: number, sy: number, age: number): void => {
   inst.px[i] = sx;   // 物理 px（屏幕）
   inst.py[i] = sy;
   inst.pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // ±55°
-  inst.pv0[i] = (10 + Math.random() * 20) * inst.noteDpr; // 初速 10~30 px/s × resp 转物理
-  inst.pv1[i] = 330 * inst.noteDpr;                       // 加速度 330 px/s² × resp 转物理
+  // —— 增强飘动：放慢直线飞射（速度包络走缓），给摆动让出视觉空间 ——
+  inst.pv0[i] = (6 + Math.random() * 12) * inst.noteDpr; // 初速 6~18 px/s（原 10~30）
+  inst.pv1[i] = 190 * inst.noteDpr;                       // 加速度 190 px/s²（原 330，压低直线感）
   inst.plife[i] = life;
   inst.page[i] = 0;
-  inst.psize[i] = 1.8;
+  inst.psize[i] = 1.9 + Math.random() * 0.7;              // 尺寸 1.9~2.6（原固定 1.8，微增且带随机）
   inst.pseed[i] = Math.random() * Math.PI * 2;
-  inst.psway[i] = (Math.random() - 0.5) * 60 * inst.noteDpr;
+  inst.psway[i] = (Math.random() - 0.5) * 100 * inst.noteDpr; // 水平漂移偏置 ±50 px/s（原 ±30，加大）
   const [r, g, b] = sampleColor(inst, sx - inst.originX, sy - inst.originY);
   inst.pr[i] = r / 255; inst.pg[i] = g / 255; inst.pb[i] = b / 255;
 };
@@ -299,16 +300,29 @@ const frame = (now: number): void => {
         i--;
         continue;
       }
-      const speed = inst.pv0[i] + inst.pv1[i] * (a2 / 1000);
+      const aSec = a2 / 1000;
+      // 速度包络：起步缓、中段渐强、后段趋稳——避免直线飞射，让摆动看得见
+      const spdRamp = Math.min(1, aSec / 0.9);
+      const speed = (inst.pv0[i] + inst.pv1[i] * spdRamp) * (1 + 0.3 * Math.sin(a2 * 0.0021 + inst.pseed[i] * 3));
       const dx = Math.sin(inst.pang[i]);
       const dy = -Math.cos(inst.pang[i]); // 向上为负 y
-      const sway = Math.sin(a2 * 0.004 + inst.pseed[i]) * 40 * inst.noteDpr;
-      inst.px[i] += (dx * speed + inst.psway[i] + sway) * dt;
-      inst.py[i] += dy * speed * dt;
+      // —— 强飘动：慢漂移 + 中频摆动 + 高频抖动，多频正弦叠加 → 复杂有机曲线路径 ——
+      const s1 = Math.sin(a2 * 0.0025 + inst.pseed[i]) * 85 * inst.noteDpr;
+      const s2 = Math.sin(a2 * 0.009 + inst.pseed[i] * 2.3) * 55 * inst.noteDpr;
+      const s3 = Math.sin(a2 * 0.024 + inst.pseed[i] * 4.1) * 20 * inst.noteDpr;
+      const swayX = inst.psway[i] + s1 + s2 + s3;
+      // 纵向起伏（漂浮感）：竖直方向也摆动，幅度随年龄渐强
+      const bobY = Math.sin(a2 * 0.0062 + inst.pseed[i] * 1.7) * 55 * inst.noteDpr * (0.35 + 0.65 * spdRamp);
+      inst.px[i] += (dx * speed + swayX) * dt;
+      inst.py[i] += (dy * speed + bobY) * dt;
       const t = 1 - u;
-      const alpha = t * Math.pow(t, 0.2) * globalFade;
+      // 明暗呼吸（微闪烁）增强流动感；寿命自然淡出
+      const twinkle = 0.8 + 0.2 * Math.sin(a2 * 0.02 + inst.pseed[i] * 5);
+      const alpha = t * Math.pow(t, 0.2) * globalFade * twinkle;
       if (alpha < 0.02) continue;
-      const haloR = inst.psize[i] * 1.25;
+      // 尺寸呼吸：随摆动节奏轻微脉动（飘动感）
+      const pulse = 1 + 0.22 * Math.sin(a2 * 0.007 + inst.pseed[i] * 2);
+      const haloR = inst.psize[i] * pulse * 1.3;
       const o = drawCount * 7;
       glData[o] = inst.px[i];       // 物理 px 直出（u_res = canvas 物理宽）
       glData[o + 1] = inst.py[i];
