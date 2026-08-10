@@ -384,6 +384,12 @@ function startLayer(p: ParticleLayerStart): void {
   // ⚠️ 不在这里 setSize：粒子层窗口 transparent+shadow(false) 对 setSize 敏感，
   // 可能触发 WebView2 渲染重建/白屏。mount 时已 calibrate 一次保证窗口全屏。
   getCurrentWindow().show().catch(() => {});
+  // —— 关键：粒子层与便签窗口同为 alwaysOnTop，但 show() 不会激活 focusable:false
+  // 的窗口，聚焦中的便签仍压在粒子层之上 → 粒子飘进便签未擦除（不透明）区域时被
+  // 便签内容遮住，观感像“顶到墙顿一下、飞出便签顶部后又继续往上飞”。
+  // 重新置顶一次（SetWindowPos HWND_TOPMOST）把粒子层抬到置顶层最上面，
+  // 粒子全程在便签之上可见、连续飘散无遮挡。
+  getCurrentWindow().setAlwaysOnTop(true).catch(() => {});
 }
 
 /** 校准粒子层窗口几何：锚定屏幕左上角 (0,0) 并铺满整屏，同步 canvas 缓冲尺寸。
