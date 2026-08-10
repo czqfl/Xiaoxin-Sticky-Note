@@ -653,16 +653,18 @@ export async function mountParticlesLayer(): Promise<void> {
   await calibrateLayerWindow();
   const ww = window.screen.width || window.innerWidth;
   const hh = window.screen.height || window.innerHeight;
+  // 物理全屏尺寸（canvas 与校准后的窗口保持一致；不能依赖 calibrate 同步——此时 canvas 未创建）
+  const fallbackPw = Math.max(1, Math.round(ww * dpr));
+  const fallbackPh = Math.max(1, Math.round(hh * dpr));
   win.setIgnoreCursorEvents(true).catch(() => {});
   document.body.style.margin = "0";
   document.body.style.overflow = "hidden";
   document.body.style.background = "transparent";
   canvas = document.createElement("canvas");
-  // canvas 尺寸与 calibrate 后的窗口物理尺寸一致（calibrateLayerWindow 同步了 canvas）
-  const fallbackPw = Math.max(1, Math.round(ww * dpr));
-  const fallbackPh = Math.max(1, Math.round(hh * dpr));
-  canvas.width = canvas?.width || fallbackPw;
-  canvas.height = canvas?.height || fallbackPh;
+  // ⚠️ 必须直接用物理全屏尺寸——刚创建的 canvas.width 默认是 300（不是 0），
+  // 若写 canvas?.width || fallback 会恒等于 300 → 画布 300×300、粒子全在画布外（看不到）。
+  canvas.width = fallbackPw;
+  canvas.height = fallbackPh;
   canvas.style.position = "fixed";
   canvas.style.left = "0";
   canvas.style.top = "0";
