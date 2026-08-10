@@ -846,8 +846,7 @@ function runGlow(
     if (endedLocal) return;
     if (!started) {
       started = true;
-      start = now;
-      prevNow = now;
+      prevNow = now; // start 已在 beginLoop 锚定为粒子层 startAt 同一时刻（两窗 age 同基准）
     }
     const dt = Math.min(0.05, Math.max(0.001, (now - prevNow) / 1000));
     prevNow = now;
@@ -954,9 +953,11 @@ function runGlow(
     if (endedLocal) return;
     renderMask(0);
     setMask(maskCanvas.toDataURL());
-    // 动画真正首帧时刻（与 mask 同 epoch）：此刻通知粒子层同步 startAt，
-    // 保证 remote 粒子层 age 时钟 ≈ 便签 mask age 时钟（最多 1 帧误差），消除固定时序偏移。
-    if (onStart) onStart(performance.now());
+    // 统一时间基准：start 锚定在本函数执行的此刻（= 传给粒子层的 startAt）。
+    // 便签 mask 与 remote 粒子层用完全相同的 age = now - start 推进 → 粒子出生时刻
+    // 与 mask 擦除时刻严格对齐，消除「粒子层先走一帧」的相位差（轨迹不脱节）。
+    start = performance.now();
+    if (onStart) onStart(start);
     try {
       root.style.clipPath = "";
       root.style.boxShadow = "none";

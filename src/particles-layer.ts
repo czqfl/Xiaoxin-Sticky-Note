@@ -119,18 +119,21 @@ const sampleColor = (lx: number, ly: number): [number, number, number] => {
 };
 
 // ---- particle：从便签矩形内按已传来的发射网格（屏幕坐标）时刻生成，向四周/上方飘散越过边界 ----
+// ⚠️ 运动方程必须与 glow-particles.ts 的 spawn 保持同一套（初速/加速度/寿命/偏转角/摆动）：
+// 粒子层与便签 mask 共享同一生命周期的前提下，若粒子飞得更快、死得更早，动画后段会出现
+// 「便签还在慢慢擦除、粒子已全部飞走」的脱节（轨迹不连贯）。改参数务必两边同步。
 const spawn = (sx: number, sy: number, age: number): void => {
   if (pcount >= maxP) return;
-  let life = (1800 + Math.random() * 1600) * k;
+  let life = Math.round((3000 + Math.random() * 2200) * k); // 与便签侧一致：3~5.2s（×k 随速度缩放）
   const fit = duration - age - 40;
   if (fit < 120) return;
   if (life > fit) life = fit;
   const i = pcount++;
   px[i] = sx;
   py[i] = sy;
-  pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180);
-  pv0[i] = 20 + Math.random() * 40;
-  pv1[i] = 650;
+  pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // 与便签侧一致：±55°
+  pv0[i] = 10 + Math.random() * 20; // 与便签侧一致：初速 10~30 px/s
+  pv1[i] = 330;                     // 与便签侧一致：加速度 330 px/s²
   plife[i] = life;
   page[i] = 0;
   psize[i] = 1.8;
