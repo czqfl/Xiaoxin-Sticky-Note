@@ -52,6 +52,8 @@ let lastPaint = 0;
 let layerKind: LayerKind = "particle";
 /** 便签窗口 devicePixelRatio（emit 事件 dprNote）：物理 px ↔ CSS px 换算（网格/取色/速度） */
 let noteDpr = 1;
+/** 屏幕可视化诊断面板（定位粒子错位用；截图即可看到数值） */
+let diagEl: HTMLDivElement | null = null;
 
 // ---- 粒子池（SoA；particle 模式动态增减，cylinder/vortex 固定池重生）----
 let maxP = 1024;
@@ -537,7 +539,7 @@ async function startLayer(p: ParticleLayerStart): Promise<void> {
   // 校准完成后再开始渲染（粒子层窗口已由便签侧提前 show，透明无感）。
   await calibrateLayerWindow();
   if (layerEnded) return;
-  // ===== 诊断日志（定位粒子错位）=====
+  // ===== 诊断：控制台 + 屏幕面板（截图即可看到数值，无需终端）=====
   try {
     const win = getCurrentWindow();
     const inner = await win.innerSize().catch(() => null);
@@ -549,13 +551,15 @@ async function startLayer(p: ParticleLayerStart): Promise<void> {
       if (emitY[i] < eminY) eminY = emitY[i];
       if (emitY[i] > emaxY) emaxY = emitY[i];
     }
-    console.log("[PL-DIAG] ===== 粒子层动画启动 =====");
-    console.log("[PL-DIAG] startAt=", layerStartAt, "Date.now=", Date.now(), "age偏移=", Date.now() - layerStartAt);
-    console.log("[PL-DIAG] origin(物理px)=(", originX, ",", originY, ") noteDpr=", noteDpr, "layerDpr=", window.devicePixelRatio);
-    console.log("[PL-DIAG] 便签尺寸(CSS)=", rectW, "x", rectH, " 发射网格范围(物理px)= x[" + eminX.toFixed(0) + ".." + emaxX.toFixed(0) + "] y[" + eminY.toFixed(0) + ".." + emaxY.toFixed(0) + "]");
-    console.log("[PL-DIAG] screen.width/height=", window.screen.width, "x", window.screen.height, " canvas=", canvas?.width, "x", canvas?.height);
-    console.log("[PL-DIAG] 窗口实际 innerSize(物理)=", inner ? (inner.width + "x" + inner.height) : "null", " outerPos=", outer ? ("(" + outer.x + "," + outer.y + ")") : "null");
-    console.log("[PL-DIAG] 粒子层窗口可见?", await win.isVisible().catch(() => "err"));
+    const lines = [
+      "【粒子层诊断】 origin(物理)=" + originX.toFixed(0) + "," + originY.toFixed(0) + " noteDpr=" + noteDpr.toFixed(2) + " layerDpr=" + (window.devicePixelRatio || 1).toFixed(2),
+      "screen=" + window.screen.width + "x" + window.screen.height + " canvas=" + canvas?.width + "x" + canvas?.height,
+      "窗口实际 innerSize=" + (inner ? inner.width + "x" + inner.height : "null") + " outerPos=" + (outer ? outer.x + "," + outer.y : "null"),
+      "便签尺寸=" + rectW + "x" + rectH + " 发射网格(物理)=x[" + eminX.toFixed(0) + ".." + emaxX.toFixed(0) + "] y[" + eminY.toFixed(0) + ".." + emaxY.toFixed(0) + "]",
+      "age偏移=" + (Date.now() - layerStartAt) + "ms 可见=" + await win.isVisible().catch(() => "err"),
+    ];
+    console.log("[PL-DIAG]", lines.join(" | "));
+    if (diagEl) diagEl.textContent = lines.join("\n");
   } catch (e) { console.log("[PL-DIAG] 诊断异常", e); }
   // ===== 诊断结束 =====
   getCurrentWindow().show().catch(() => {});
@@ -668,6 +672,10 @@ export async function mountParticlesLayer(): Promise<void> {
   canvas.style.zIndex = "2147483647";
   canvas.style.pointerEvents = "none";
   document.body.appendChild(canvas);
+  // 屏幕可视化诊断面板（左上角黑底绿字，截图即可看到诊断数值）
+  diagEl = document.createElement("div");
+  diagEl.style.cssText = "position:fixed;left:8px;top:8px;z-index:2147483646;background:rgba(0,0,0,0.85);color:#0f0;font:11px/1.6 monospace;padding:6px 10px;border-radius:4px;pointer-events:none;white-space:pre;";
+  document.body.appendChild(diagEl);
   if (!setupGL()) {
     console.error("粒子层 WebGL 初始化失败");
     return;
