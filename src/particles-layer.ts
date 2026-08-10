@@ -1,19 +1,19 @@
-// 全屏透明「粒子层」窗口：负责「粒子消散」动画的粒子渲染。
-// 粒子坐标使用**屏幕坐标**（原点=屏幕左上角），因此粒子可以飘出便签窗口、
+// 全屏透明「粒子层」窗口：负责所有粒子动画的粒子渲染（particle 粒子消散 / cylinder 旋柱 /
+// vortex 涡旋）。粒子坐标使用**屏幕坐标**（原点=屏幕左上角），因此粒子可以飘出便签窗口、
 // 在整个屏幕上自由活动，不会被便签窗口的四周边框框住。
 // ----------------------------------------------------------------------------
 // 便签窗口负责 mask（便签本体擦除）+ 计时；本窗口只画粒子。参数经「particles-start」
 // 事件传入（type + 便签屏幕位置/尺寸 + 颜色场 + 粒子强度 + 动画速度）。
 // 动画播完自隐藏；「particles-cancel」立即停止并隐藏。
 
-import { getCurrentWindow, LogicalPosition, PhysicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalSize, LogicalPosition } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
 
-type LayerKind = "particle";
+type LayerKind = "particle" | "cylinder" | "vortex";
 
 interface ParticleLayerStart {
   type: LayerKind;
-  /** 便签窗口左上角屏幕坐标（物理 px）——粒子发射网格已含此偏移 */
+  /** 便签窗口左上角屏幕坐标（CSS px） */
   originX: number;
   originY: number;
   /** 便签窗口宽高（CSS px） */
@@ -23,20 +23,16 @@ interface ParticleLayerStart {
   fieldW: number;
   fieldH: number;
   fieldData: number[];
-  /** 粒子消散模式：发射网格（**物理 px 屏幕坐标**，已含便签 origin 平移）。
-   *  由便签窗口用同一 dissolveTimeAt 网格算出 → 粒子出生点 = 消散点（单一真相源，无固定偏移）。 */
-  emitX: number[];
-  emitY: number[];
-  emitT: number[];
-  bins: number[][];
+  /** 粒子消散模式：消散时间场（单位 ms） */
+  tW: number;
+  tH: number;
+  tField: number[];
   /** 粒子强度 0~100 */
   density: number;
   /** 动画速度百分比（100=原速） */
   speed: number;
-  /** 便签动画开始时刻（Date.now() 系统时钟）：粒子层用同一基准计算 age，保证与便签 mask 同步 */
+  /** 便签动画开始时刻（performance.now() 时间戳）：粒子层用同一基准计算 age，保证与便签 mask 同步 */
   startAt?: number;
-  /** 便签窗口的 devicePixelRatio（物理 px ↔ CSS px 换算：取色/速度用） */
-  dprNote?: number;
 }
 
 let canvas: HTMLCanvasElement | null = null;
@@ -53,10 +49,13 @@ let started = false;
 let lastPaint = 0;
 let layerKind: LayerKind = "particle";
 
-// ---- 粒子池（SoA；粒子消散模式动态增减）----
+// ---- 粒子池（SoA；particle 模式动态增减，cylinder/vortex 固定池重生）----
 let maxP = 1024;
 let px = new Float32Array(maxP);
 let py = new Float32Array(maxP);
+let pth = new Float32Array(maxP);    // 初始角 / 圆周角
+let prad = new Float32Array(maxP);   // cylinder: 截面半径；vortex: 半径比例
+let pbirth = new Float32Array(maxP); // 出生时刻（动画 age，ms）
 let pang = new Float32Array(maxP);
 let pv0 = new Float32Array(maxP);
 let pv1 = new Float32Array(maxP);
@@ -89,26 +88,32 @@ let rectH = 1;
 let fieldW = 8;
 let fieldH = 8;
 let fieldData: number[] = new Array(64).fill(255);
+let tW = 8;
+let tH = 8;
+let tField: number[] = new Array(64).fill(0);
 let layerDensity = 50;
-/** 便签窗口的 devicePixelRatio（来自 emit 事件 dprNote）：物理 px ↔ CSS px 换算用 */
-let noteDpr = 1;
+// cylinder / vortex 几何
+let cx = 0;
+let cy = 0;
+let maxR = 500;
+let R = 200;
+let focal = 520;
+let omega = 6;
 
 const ensurePool = (n: number): void => {
   if (n <= maxP) return;
   maxP = n;
-  px = new Float32Array(maxP); py = new Float32Array(maxP); pang = new Float32Array(maxP);
+  px = new Float32Array(maxP); py = new Float32Array(maxP); pth = new Float32Array(maxP);
+  prad = new Float32Array(maxP); pbirth = new Float32Array(maxP); pang = new Float32Array(maxP);
   pv0 = new Float32Array(maxP); pv1 = new Float32Array(maxP); plife = new Float32Array(maxP);
   page = new Float32Array(maxP); psize = new Float32Array(maxP); pseed = new Float32Array(maxP);
   psway = new Float32Array(maxP); pr = new Float32Array(maxP); pg = new Float32Array(maxP);
   pb = new Float32Array(maxP); glData = new Float32Array(maxP * 7);
 };
 
-const sampleColor = (lxPhys: number, lyPhys: number): [number, number, number] => {
-  // 输入为物理 px（相对便签左上角）；颜色场是便签 CSS 坐标采样 → 先 /noteDpr 转 CSS px
+const sampleColor = (lx: number, ly: number): [number, number, number] => {
   // 颜色场缺失/越界时兜底亮白，避免 NaN 渲染成未定义颜色（表现为颜色"固定/异常"）
   if (!fieldData || fieldData.length < 4) return [235, 240, 255];
-  const lx = lxPhys / noteDpr;
-  const ly = lyPhys / noteDpr;
   let fx = Math.round((lx / rectW) * fieldW);
   if (fx < 0) fx = 0;
   else if (fx >= fieldW) fx = fieldW - 1;
@@ -125,29 +130,64 @@ const sampleColor = (lxPhys: number, lyPhys: number): [number, number, number] =
   return [Math.min(255, r * f), Math.min(255, g * f), Math.min(255, b * f)];
 };
 
-// ---- particle：从便签矩形内按已传来的发射网格（物理 px 屏幕坐标）时刻生成，向四周/上方飘散越过边界 ----
-// ⚠️ 运动方程必须与 glow-particles.ts 的 spawn 保持同一套（初速/加速度/寿命/偏转角/摆动）：
-// 粒子层与便签 mask 共享同一生命周期的前提下，若粒子飞得更快、死得更早，动画后段会出现
-// 「便签还在慢慢擦除、粒子已全部飞走」的脱节（轨迹不连贯）。改参数务必两边同步。
-// 物理像素统一后：坐标/速度均为物理 px（= CSS px × resp 缩放），视觉位移与 resp 无关。
+const sampleT = (lx: number, ly: number): number => {
+  let fx = Math.round((lx / rectW) * tW);
+  if (fx < 0) fx = 0;
+  else if (fx >= tW) fx = tW - 1;
+  let fy = Math.round((ly / rectH) * tH);
+  if (fy < 0) fy = 0;
+  else if (fy >= tH) fy = tH - 1;
+  return tField[fy * tW + fx];
+};
+
+// ---- particle：从便签矩形内按 T 场时刻生成，向四周/上方飘散越过边界 ----
 const spawn = (sx: number, sy: number, age: number): void => {
   if (pcount >= maxP) return;
-  let life = Math.round((3000 + Math.random() * 2200) * k); // 与便签侧一致：3~5.2s（×k 随速度缩放）
+  let life = (1800 + Math.random() * 1600) * k;
   const fit = duration - age - 40;
   if (fit < 120) return;
   if (life > fit) life = fit;
   const i = pcount++;
   px[i] = sx;
   py[i] = sy;
-  pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // 与便签侧一致：±55°
-  pv0[i] = (10 + Math.random() * 20) * noteDpr; // 与便签侧一致：初速 10~30 px/s（×resp 转物理）
-  pv1[i] = 330 * noteDpr;                       // 与便签侧一致：加速度 330 px/s²（×resp 转物理）
+  pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180);
+  pv0[i] = 20 + Math.random() * 40;
+  pv1[i] = 650;
   plife[i] = life;
   page[i] = 0;
   psize[i] = 1.8;
   pseed[i] = Math.random() * Math.PI * 2;
-  psway[i] = (Math.random() - 0.5) * 60 * noteDpr;
-  const [r, g, b] = sampleColor(sx - originX, sy - originY);   // 物理屏幕坐标 → 减 origin 回便签局部（物理）取色
+  psway[i] = (Math.random() - 0.5) * 60;
+  const [r, g, b] = sampleColor(sx - originX, sy - originY);
+  pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
+};
+
+// ---- cylinder：固定半径旋转圆柱壳（粒子铺满截面圆盘，绕竖轴透视旋转）----
+const respawnCylinder = (i: number, atAge: number): void => {
+  pbirth[i] = atAge;
+  pth[i] = Math.random() * Math.PI * 2;
+  py[i] = originY + Math.random() * rectH;
+  plife[i] = Math.round((1200 + Math.random() * 900) * k);
+  psize[i] = 1.8;
+  prad[i] = R * Math.sqrt(Math.random()); // 截面圆盘面积均匀 → 实心圆柱
+  const [r, g, b] = sampleColor(Math.random() * rectW, py[i] - originY);
+  pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
+};
+
+// ---- vortex：中心点圆形扩张 + 圆盘内粒子绕心旋转吸入 ----
+// 粒子消散式：粒子在生成位置（便签该处背景）取色，随后**带着这个颜色**旋转飘散；
+// 半径 = 当前圆盘半径 × 比例（跟随扩张铺满整个已粒子化圆盘），再向中心吸入收缩。
+const respawnVortex = (i: number, atAge: number, curR: number): void => {
+  pbirth[i] = atAge;
+  pth[i] = Math.random() * Math.PI * 2;
+  plife[i] = Math.round((900 + Math.random() * 600) * k);
+  psize[i] = 2.0;
+  prad[i] = Math.sqrt(Math.random()); // 圆盘面积均匀的比例（0~1，跟随 curR 扩张）
+  // 生成处取色：出生位置（当前圆盘该半径处）对应的便签背景色
+  const r0 = curR * prad[i];
+  const sx0 = cx + r0 * Math.cos(pth[i]);
+  const sy0 = cy + r0 * Math.sin(pth[i]);
+  const [r, g, b] = sampleColor(sx0 - originX, sy0 - originY);
   pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
 };
 
@@ -170,50 +210,98 @@ function stopLayer(): void {
 }
 
 // ---- 各模式的初始化 ----
-function buildEmitGrid(p: ParticleLayerStart): boolean {
-  originX = p.originX;
-  originY = p.originY;
+function buildEmitGrid(p: ParticleLayerStart): void {
   rectW = Math.max(1, p.width);
   rectH = Math.max(1, p.height);
+  originX = p.originX;
+  originY = p.originY;
   fieldW = p.fieldW || 8;
   fieldH = p.fieldH || 8;
   fieldData = p.fieldData || [];
-  noteDpr = Math.max(1, p.dprNote || 1); // 便签侧 dpr：物理 px ↔ CSS px 换算（取色/速度）
-  // 直接采用便签传来的「屏幕坐标发射网格 + 各自 T 时刻 + 分桶」（单一真相源）：
-  // 粒子出生点 = 便签消散点（坐标一致）、出生时刻 = 消散时刻（时刻一致），
-  // 不再用 T 场在粒子层二次重建位置 → 从根上消除"固定偏移间距"。
-  const ex = p.emitX || [];
-  const ey = p.emitY || [];
-  const et = p.emitT || [];
-  const bins = p.bins || [];
-  ecount = ex.length;
-  emitX = Float32Array.from(ex);
-  emitY = Float32Array.from(ey);
-  emitT = Float32Array.from(et);
+  tW = p.tW || 8;
+  tH = p.tH || 8;
+  tField = p.tField || [];
+  const spacing = 3;
+  const ecx = Math.max(2, Math.ceil(rectW / spacing));
+  const ecy = Math.max(2, Math.ceil(rectH / spacing));
+  ecount = ecx * ecy;
+  emitX = new Float32Array(ecount);
+  emitY = new Float32Array(ecount);
+  emitT = new Float32Array(ecount);
   emitDone = new Uint8Array(ecount);
-  binSize = 20;
-  binPts = bins.length ? bins.map((b) => b.slice()) : [[]];
+  let ei = 0;
   maxEmitT = 0;
-  for (let i = 0; i < ecount; i++) if (emitT[i] > maxEmitT) maxEmitT = emitT[i];
-  // 防御校验：发射网格应覆盖便签矩形（origin → origin+size）的屏幕区域。若便签侧 origin
-  // 获取异常退化为 (0,0)，网格会整体落在屏幕左上角（与便签完全错位）→ 拒收本次动画，
-  // 保持空画面，等待便签侧回退 self 模式（粒子画在便签窗口内，零偏移）。
-  if (ecount > 0 && (originX > 4 || originY > 4)) {
-    let minX = Infinity;
-    let minY = Infinity;
-    for (let i = 0; i < ecount; i++) {
-      if (emitX[i] < minX) minX = emitX[i];
-      if (emitY[i] < minY) minY = emitY[i];
+  for (let iy = 0; iy < ecy; iy++) {
+    for (let ix = 0; ix < ecx; ix++) {
+      const lx = (ix + 0.5) * spacing;
+      const ly = (iy + 0.5) * spacing;
+      emitX[ei] = originX + lx;
+      emitY[ei] = originY + ly;
+      let T = sampleT(lx, ly);
+      if (!isFinite(T) || T < 0) T = 0;
+      emitT[ei] = T;
+      if (T > maxEmitT) maxEmitT = T;
+      ei++;
     }
-    if (minX < originX - 2 || minY < originY - 2) {
-      console.warn("[particles-layer] 发射网格与窗口 origin 不匹配，拒收本次动画");
-      return false;
-    }
+  }
+  binSize = 20;
+  const binCount = Math.ceil(maxEmitT / binSize) + 2;
+  binPts = [];
+  for (let b = 0; b < binCount; b++) binPts.push([]);
+  for (let i = 0; i < ecount; i++) {
+    let b = Math.floor(emitT[i] / binSize);
+    if (b < 0) b = 0;
+    else if (b >= binCount) b = binCount - 1;
+    binPts[b].push(i);
   }
   const peakAlive = Math.round(ecount * (0.03 + 0.97 * layerDensity / 100));
   ensurePool(peakAlive + 1500);
   pcount = 0;
-  return true;
+}
+
+function initCylinder(p: ParticleLayerStart): void {
+  rectW = Math.max(1, p.width);
+  rectH = Math.max(1, p.height);
+  originX = p.originX;
+  originY = p.originY;
+  fieldW = p.fieldW || 8;
+  fieldH = p.fieldH || 8;
+  fieldData = p.fieldData || [];
+  cx = originX + rectW / 2;
+  R = rectW * 0.46;
+  focal = R * 2.6;
+  omega = (Math.PI * 2 * 2) / (duration / 1000);
+  // layerDensity 是 0~100，粒子数计算必须先归一化（×/100），否则粒子数爆到百万级卡死
+  const d = layerDensity / 100;
+  const N = Math.round(5000 + d * 22000);
+  ensurePool(N + 64);
+  for (let i = 0; i < N; i++) {
+    respawnCylinder(i, 0); // 第一帧全部出生（fadeIn 统一淡入），避免逐个冒粒子
+  }
+  pcount = N;
+}
+
+function initVortex(p: ParticleLayerStart): void {
+  rectW = Math.max(1, p.width);
+  rectH = Math.max(1, p.height);
+  originX = p.originX;
+  originY = p.originY;
+  fieldW = p.fieldW || 8;
+  fieldH = p.fieldH || 8;
+  fieldData = p.fieldData || [];
+  cx = originX + rectW / 2;
+  cy = originY + rectH / 2;
+  maxR = Math.hypot(rectW, rectH) / 2;
+  omega = (Math.PI * 2 * 2) / (duration / 1000);
+  // layerDensity 是 0~100，粒子数计算必须先归一化（×/100），否则粒子数爆到百万级卡死
+  const d = layerDensity / 100;
+  const N = Math.round(4000 + d * 18000);
+  ensurePool(N + 64);
+  const initCurR = maxR * 0.05; // 起始前缘（5% 小圆）
+  for (let i = 0; i < N; i++) {
+    respawnVortex(i, 0, initCurR); // 第一帧全部出生（fadeIn 统一淡入）
+  }
+  pcount = N;
 }
 
 const frame = (now: number): void => {
@@ -225,12 +313,8 @@ const frame = (now: number): void => {
   const dt = Math.min(0.05, Math.max(0.001, (now - lastPaint) / 1000));
   lastPaint = now;
   // 动画 age 用便签动画开始时刻（startAt）为基准：粒子层与便签 mask 严格同步，
-  // 不受粒子层收到事件/窗口显示的延迟影响（否则粒子化总比便签消散慢）。
-  // ⚠️ age 必须用 Date.now()（系统时钟）计算：startAt 是便签窗口传来的时间戳，
-  // 若用本窗口的 performance.now() 减去它，两个 WebView 页面时间原点不同会产生
-  // 固定偏差 Δ → 首帧涌出前 Δ 的发射桶（便签外冒粒子）、fit 提前截断寿命（飘一点就
-  // 消失）、age 提前达到 duration（粒子瞬间清空像卡了一下）。dt 仍用 rAF 帧间隔（窗口内相对）。
-  const age = Date.now() - layerStartAt;
+  // 不受粒子层收到事件/窗口显示的延迟影响（否则粒子化总比便签消散慢）
+  const age = now - layerStartAt;
   const globalFade = age > duration - 200 ? Math.max(0, (duration - age) / 200) : 1;
 
   if (!gl) return;
@@ -271,7 +355,7 @@ const frame = (now: number): void => {
       const speed = pv0[i] + pv1[i] * (a / 1000);
       const dx = Math.sin(pang[i]);
       const dy = -Math.cos(pang[i]);
-      const sway = Math.sin(a * 0.004 + pseed[i]) * 40 * noteDpr; // 摆动幅度（CSS px/s）× resp 转物理
+      const sway = Math.sin(a * 0.004 + pseed[i]) * 40;
       px[i] += (dx * speed + psway[i] + sway) * dt;
       py[i] += dy * speed * dt;
       const t = 1 - u;
@@ -279,12 +363,85 @@ const frame = (now: number): void => {
       if (alpha < 0.02) continue;
       const haloR = psize[i] * 1.25;
       const o = drawCount * 7;
-      // px/py 已是物理 px（emit 网格物理化 + 速度物理化），直接输出，不再 × dpr；
-      // u_res = canvas.width（物理 px），与 resp 缩放/窗口 dpr 无关。
-      glData[o] = px[i];
-      glData[o + 1] = py[i];
-      glData[o + 2] = haloR * 2 * noteDpr; // 粒子直径（CSS px）× resp 转物理
+      glData[o] = px[i] * dpr;
+      glData[o + 1] = py[i] * dpr;
+      glData[o + 2] = haloR * 2 * dpr;
       glData[o + 3] = alpha;
+      glData[o + 4] = pr[i];
+      glData[o + 5] = pg[i];
+      glData[o + 6] = pb[i];
+      drawCount++;
+    }
+  } else if (layerKind === "cylinder") {
+    // 粒子半径随时间缓慢扩张（比便签 mask 条带慢，ease-in 先慢后快）：
+    // 粒子在旋转的同时轨道半径逐渐变大，最后飘出便签矩形区域
+    const growT = age / duration;
+    const grow = 1 + 1.2 * growT * growT; // 最终 ~2.2R（R=0.46w → 最大半径≈便签宽，飘出左右）
+    for (let i = 0; i < pcount; i++) {
+      let a = age - pbirth[i];
+      if (a < 0) continue;
+      if (a >= plife[i]) {
+        respawnCylinder(i, age);
+        a = 0;
+      }
+      const theta = pth[i] + omega * (age / 1000);
+      const r = prad[i] * grow;
+      const z = r * Math.cos(theta);
+      const s = Math.min(focal / (focal - z), 3); // 近大远小（限幅避免飘远后爆放大）
+      const sx = cx + r * Math.sin(theta) * s;
+      const sy = py[i];
+      const fadeIn = Math.min(1, a / 150);
+      const u = a / plife[i];
+      const lifeFade = u > 0.7 ? Math.max(0, (1 - u) / 0.3) : 1;
+      const depthShade = 0.62 + 0.38 * Math.max(0, Math.min(1, (z + r) / (2 * r)));
+      const alpha = fadeIn * lifeFade * globalFade * depthShade;
+      if (alpha < 0.02) continue;
+      const haloR = psize[i] * s * (0.6 + 0.4 * fadeIn);
+      const o = drawCount * 7;
+      glData[o] = sx * dpr;
+      glData[o + 1] = sy * dpr;
+      glData[o + 2] = haloR * 2 * dpr;
+      glData[o + 3] = alpha;
+      glData[o + 4] = pr[i];
+      glData[o + 5] = pg[i];
+      glData[o + 6] = pb[i];
+      drawCount++;
+    }
+  } else {
+    // vortex：两段式——前 40% 快速扩张到 maxR（点扩散成圆盘），后 60% 迅速收拢回中心点
+    const p = Math.min(1, age / duration);
+    let curR: number;
+    if (p < 0.4) {
+      const q = p / 0.4;
+      curR = maxR * (0.05 + 0.95 * q * (2 - q)); // ease-out 快速扩张
+    } else {
+      const q = (p - 0.4) / 0.6;
+      curR = maxR * (1 - 0.95 * q * q); // ease-in 迅速收拢回点
+    }
+    for (let i = 0; i < pcount; i++) {
+      let a = age - pbirth[i];
+      if (a < 0) continue;
+      if (a >= plife[i]) {
+        respawnVortex(i, age, curR);
+        a = 0;
+      }
+      const theta = pth[i] + omega * (age / 1000);
+      const t = a / plife[i];
+      const shrink = t * t;
+      const r = curR * prad[i] * (1 - 0.92 * shrink); // 跟随当前圆盘扩张/收拢 + 向中心吸入收缩
+      const sx = cx + r * Math.cos(theta);
+      const sy = cy + r * Math.sin(theta);
+      const fadeIn = Math.min(1, a / 150);
+      const lifeFade = t > 0.7 ? Math.max(0, (1 - t) / 0.3) : 1;
+      const alpha = fadeIn * lifeFade * globalFade;
+      if (alpha < 0.02) continue;
+      const haloR = psize[i] * (0.6 + 0.4 * fadeIn);
+      const o = drawCount * 7;
+      glData[o] = sx * dpr;
+      glData[o + 1] = sy * dpr;
+      glData[o + 2] = haloR * 2 * dpr;
+      glData[o + 3] = alpha;
+      // 粒子消散式：颜色 = 生成位置背景色，带色旋转飘散（固定跟随粒子）
       glData[o + 4] = pr[i];
       glData[o + 5] = pg[i];
       glData[o + 6] = pb[i];
@@ -309,63 +466,29 @@ const frame = (now: number): void => {
   }
 };
 
-/** 校准粒子层窗口几何：锚定屏幕左上角 (0,0) 并铺满整屏，同时同步 canvas 缓冲尺寸。
- *  关键：窗口必须 resizable（tauri.conf.json），否则 setSize 无效、窗口永远停在初始尺寸，
- *  粒子屏幕坐标与窗口几何错位（压缩/偏移/不可见）。尺寸一律用**物理像素**（PhysicalSize），
- *  与 resp 缩放/多显示器 dpr 差异无关。每次动画开始前校准，确保几何就绪。 */
-async function calibrateLayerWindow(): Promise<void> {
-  const win = getCurrentWindow();
-  const ww = Math.round(window.screen.width || window.innerWidth || 1920);
-  const hh = Math.round(window.screen.height || window.innerHeight || 1080);
-  // 物理全屏尺寸：screen.width 为 CSS px，× 本窗口 dpr = 物理 px（与 resp 缩放无关）
-  const layerDpr = window.devicePixelRatio || 1;
-  const pw = Math.max(1, Math.round(ww * layerDpr));
-  const ph = Math.max(1, Math.round(hh * layerDpr));
-  await win.setPosition(new LogicalPosition(0, 0)).catch(() => {});
-  await win.setSize(new PhysicalSize(pw, ph)).catch(() => {});
-  if (canvas && (canvas.width !== pw || canvas.height !== ph)) {
-    // canvas 尺寸变更会重置 WebGL context → 重建 GL 基础设施（program/buffer/attrib）
-    canvas.width = pw;
-    canvas.height = ph;
-    gl = null;
-    buf = null;
-    aPosLoc = 0;
-    aParamLoc = 0;
-    aColorLoc = 0;
-    if (!setupGL()) {
-      console.error("粒子层 WebGL 重建失败");
-    }
-  }
-}
-
 const step = (now: number): void => {
   frame(now);
   if (!layerEnded) rafId = requestAnimationFrame(step);
 };
 
-async function startLayer(p: ParticleLayerStart): Promise<void> {
+function startLayer(p: ParticleLayerStart): void {
   layerKind = p.type || "particle";
-  // startAt 是便签窗口用 Date.now()（系统时钟）记录的动画开始时刻：本窗口也必须用
-  // Date.now() 计算 age（见 frame），跨窗口同步不受 performance.now() 时间原点差异影响。
-  layerStartAt = p.startAt ?? Date.now();
+  layerStartAt = p.startAt ?? performance.now();
   layerDensity = Math.max(0, Math.min(100, p.density ?? 50));
   k = Math.max(0.25, Math.min(4, 100 / Math.max(10, p.speed ?? 100)));
-  if (!buildEmitGrid(p)) {
-    // 发射网格与窗口 origin 不匹配（便签侧 origin 获取异常退化为 (0,0)）→ 拒收本次动画，
-    // 保持空画面并隐藏窗口，避免粒子在便签之外的位置生成（完全错位）。
-    layerEnded = true;
-    layerActive = false;
-    getCurrentWindow().hide().catch(() => {});
-    return;
+  if (layerKind === "particle") {
+    buildEmitGrid(p);
+    duration = Math.round(2400 * k);
+  } else if (layerKind === "cylinder") {
+    duration = Math.round(1000 * k);
+    initCylinder(p);
+  } else {
+    duration = Math.round(1200 * k);
+    initVortex(p);
   }
-  duration = Math.round(4800 * k); // 与便签侧消散总时长保持一致（glow-particles.ts 的 duration），避免粒子在消散途中被提前截断
   layerEnded = false;
   layerActive = true;
   started = false;
-  // 校准窗口几何（幂等）：mount 时 setSize 可能失败导致窗口不是全屏 → 粒子错位/压缩。
-  // 校准完成后才开始渲染（粒子层窗口已由便签侧提前 show，透明无感）。
-  await calibrateLayerWindow();
-  if (layerEnded) return;
   getCurrentWindow().show().catch(() => {});
   rafId = requestAnimationFrame(step);
   backupId = window.setInterval(() => {
@@ -455,19 +578,16 @@ export async function mountParticlesLayer(): Promise<void> {
   const win = getCurrentWindow();
   const ww = window.screen.width || window.innerWidth;
   const hh = window.screen.height || window.innerHeight;
-  // 初始校准（动画开始前 startLayer 还会再校准一次兜底）：物理尺寸，与 resp 缩放无关
-  dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const pw = Math.max(1, Math.round(ww * dpr));
-  const ph = Math.max(1, Math.round(hh * dpr));
   await win.setPosition(new LogicalPosition(0, 0)).catch(() => {});
-  await win.setSize(new PhysicalSize(pw, ph)).catch(() => {});
+  await win.setSize(new LogicalSize(ww, hh)).catch(() => {});
   win.setIgnoreCursorEvents(true).catch(() => {});
   document.body.style.margin = "0";
   document.body.style.overflow = "hidden";
   document.body.style.background = "transparent";
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
   canvas = document.createElement("canvas");
-  canvas.width = pw;
-  canvas.height = ph;
+  canvas.width = Math.max(1, Math.round(ww * dpr));
+  canvas.height = Math.max(1, Math.round(hh * dpr));
   canvas.style.position = "fixed";
   canvas.style.left = "0";
   canvas.style.top = "0";

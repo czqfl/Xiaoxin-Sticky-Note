@@ -1,16 +1,17 @@
-// 便签「粒子光效消散」动画（减速·三批次版）：界面分三批从随机几处逐级碎裂成发光微粒，
-// 区域化朝相近方向加速上升、边升边淡出，全程带光晕辉光；整体消散更平缓、更持久、更具层次感。
+// 便签「粒子光效消散」动画（恢复版）：界面从随机几处开始碎裂成发光微粒，
+// 区域化朝相近方向加速上升、边升边淡出，全程带光晕辉光。
 // ----------------------------------------------------------------------------
 // 触发：关闭窗口时播放（粒子风格 particle_mode = "particle" 时选用）。
 // 呼出时不播放动画：直接复原便签显示（见 note.ts summoned 处理）。
 //
 // 视觉要点（对齐需求）：
-// - **智能三批次逐级起爆（再减速、有层次）**：整体时长 ~4.8s，比上一版 3.6s 再拉长，消散更平缓持久；
-//   每批新起爆点用**贪心最远点采样**自动选"距已有起点最远 = 当前最空的区域"发起，逐级吞掉空隙、衔接自然；
-//   首批（~0ms）第 1 点落于下 1/3（自然从底部升起）、第 2 点取最远点；第二批（~43%）补 2~3 点；第三批（~74%）再补 2~3 点。
-//   各区域以自身为起点向外蔓延，方向性扩张速度：往上消散 > 左右消散 > 往下消散
+// - **上中下三部分限制起爆**：便签竖向三等分——
+//   下 1/3 必须随机某点发起消散（~0ms）；
+//   上 1/3 随机从左侧 / 右侧 / 上侧边缘发起消散（~0ms）；
+//   中 1/3 必发 1 点（动画 ~40% 时起爆）；下/上各 35% 概率补充 1 点（~40% 时）。
+//   每个区域以自身为起点向外蔓延，方向性扩张速度：往上消散 > 左右消散 > 往下消散
 //   （等效距离 上×0.4 / 左右×1.0 / 下×1.8）；幂函数蔓延（先慢后快）；
-//   花瓣状角度调制 → 扩散形状不规则（非圆形）；取 min 叠加 → 各区域前沿先后推进、衔接流畅无断层。
+//   花瓣状角度调制 → 扩散形状不规则（非圆形）；取 min 叠加 → 各区域前沿先后推进。
 // - 动画后 50%：便签整体透明度 100% → 50% 淡出（不必等 mask 铺满全窗）。
 // - **粒子自由飘散、无矩形边界约束**：等加速上升（speed = v0 + a·t）+ 随机左右偏转 ±55°
 //   + 横向恒定向漂移 ±30px/s + 水平轻摆 ±40px/s；粒子越过便签原本的矩形边界后继续
@@ -32,16 +33,8 @@ let glowActive = false;
  *  避免快速呼出时把正在播放的新动画便签裁掉/隐藏（见 cleanupAfterHide 守卫）。 */
 let glowGen = 0;
 
-/** remote 模式（粒子交给全屏透明粒子层窗口）时，最近一次构建的发射网格（屏幕坐标 + 各自 T 时刻 + 分桶）。
- *  关键：这些坐标直接由「本窗口的 dissolveTimeAt 网格」算出（已含 origin 平移），
- *  粒子层原样使用，不再用 T 场在粒子层里二次重建位置 → 杜绝 mask 与粒子轨迹的固定偏移（单一真相源）。 */
-let lastEmit: {
-  ex: Float32Array;
-  ey: Float32Array;
-  et: Float32Array;
-  bins: number[][];
-  n: number;
-} | null = null;
+/** remote 模式（粒子交给全屏透明粒子层窗口）时，最近一次构建的消散时间场（供转发给粒子层）。 */
+let lastTField: { tW: number; tH: number; data: number[] } | null = null;
 
 /** 当前粒子动画的“立即中止”句柄（由 runGlow 注册；cancelGlowParticles 调用）。 */
 let cancelGlowFn: (() => void) | null = null;
@@ -97,21 +90,6 @@ export function bumpGlowGen(): void {
   glowGen++;
 }
 
-/** 获取本（便签）窗口的屏幕位置（物理 px）。Tauri 的 outerPosition() 偶发失败时重试；
- *  仍拿不到返回 null —— 调用方必须回退 self 模式，绝不能带 (0,0) 偏移让粒子错位生成。 */
-async function getNoteWindowPos(): Promise<{ x: number; y: number } | null> {
-  for (let i = 0; i < 3; i++) {
-    try {
-      const p = await getCurrentWindow().outerPosition();
-      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) return { x: p.x, y: p.y };
-    } catch {
-      /* 下一轮重试 */
-    }
-    if (i < 2) await new Promise((r) => window.setTimeout(r, 16));
-  }
-  return null;
-}
-
 /** 请求播放「粒子光效消散」关闭动画；onDone 在动画完全结束后调用（真正关闭窗口）。
  * remote = true 时：本窗口只播放 mask 消散，粒子交给全屏透明粒子层窗口渲染
  * （粒子可飘出便签矩形边界、在整个屏幕自由飘散）。 */
@@ -163,63 +141,50 @@ export function requestGlowDissolveClose(
     }
     if (aborted) return;
     try {
-      // 便签窗口 dpr（物理 px ↔ CSS px 换算）：提到外层，onStart 回调（emit dprNote）也能访问
-      const noteDpr = Math.min(window.devicePixelRatio || 1, 2);
       // remote：提前并行获取颜色场与窗口位置（emit 不再 await，粒子层与 mask 几乎同步开始）
       let layerField: ColorField | null = null;
       let layerOrigin = { x: 0, y: 0 };
       if (useRemote && !aborted) {
         const w = window.innerWidth;
         const h = window.innerHeight;
+        const dpr = Math.min(window.devicePixelRatio || 1, 2);
         const [field, pos] = await Promise.all([
           buildColorField(root, w, h),
-          getNoteWindowPos(), // outerPosition 失败会重试；拿不到直接回退 self（见下）
+          getCurrentWindow().outerPosition().catch(() => null),
         ]);
-        if (!pos) {
-          // 拿不到便签屏幕位置：绝不能带 (0,0) 偏移让粒子生成在屏幕左上角（完全错位）→
-          // 回退 self 模式（粒子画在便签窗口内，与 mask 天然同坐标、零偏移）。
-          useRemote = false;
-        } else {
-          layerField = field;
-          // 物理像素统一：origin 保持 pos 的物理 px，粒子发射网格 = 便签局部(物理) + origin(物理)。
-          // 不再 /dpr 转 CSS —— 跨窗口/跨缩放/多显示器下物理坐标全局一致。
-          layerOrigin.x = pos.x;
-          layerOrigin.y = pos.y;
+        layerField = field;
+        if (pos) {
+          layerOrigin.x = pos.x / dpr;
+          layerOrigin.y = pos.y / dpr;
         }
       }
       if (aborted) return;
+      const animStartAt = performance.now(); // 动画开始时刻（粒子层用同一基准计算 age，严格同步）
       stopRun = runGlow(root, particleDensity, speed, () => {
         window.clearTimeout(watchdog);
         safeDone();
-      }, useRemote ? "remote" : "self", layerOrigin,
-        // onStart：动画真正首帧时刻（与 mask 同 epoch）→ 此刻才把粒子层 startAt 设为同一基准，
-        // 避免「过早 capture performance.now()」导致的粒子层 age 比 mask 早一大截（固定时序偏移）。
-        (realStartAt: number) => {
-          if (!useRemote || aborted) return;
-          const field = layerField;
-          const emitGrid = lastEmit;
-          emit("particles-start", {
-            type: "particle",
-            originX: layerOrigin.x,
-            originY: layerOrigin.y,
-            width: window.innerWidth,
-            height: window.innerHeight,
-            fieldW: field?.fw ?? 8,
-            fieldH: field?.fh ?? 8,
-            fieldData: field ? Array.from(field.data) : [],
-            // 直接传「已含 origin 平移的物理 px 屏幕坐标发射网格 + 各自 T 时刻 + 分桶」，
-            // 粒子层原样使用 → 粒子出生点 = 消散点（单一轨迹源），不再二次重建位置。
-            emitX: emitGrid ? Array.from(emitGrid.ex) : [],
-            emitY: emitGrid ? Array.from(emitGrid.ey) : [],
-            emitT: emitGrid ? Array.from(emitGrid.et) : [],
-            bins: emitGrid ? emitGrid.bins : [],
-            density: particleDensity,
-            speed,
-            startAt: realStartAt,
-            // 便签窗口 dpr：粒子层把物理坐标换算回 CSS 取色/速度时用
-            dprNote: noteDpr,
-          }).catch(() => {});
-        });
+      }, useRemote ? "remote" : "self");
+      // remote：立即发 start（颜色场/位置已就绪），粒子层与 mask 同步开始
+      if (useRemote && !aborted) {
+        const field = layerField;
+        const tfield = lastTField;
+        emit("particles-start", {
+          type: "particle",
+          originX: layerOrigin.x,
+          originY: layerOrigin.y,
+          width: window.innerWidth,
+          height: window.innerHeight,
+          fieldW: field?.fw ?? 8,
+          fieldH: field?.fh ?? 8,
+          fieldData: field ? Array.from(field.data) : [],
+          tW: tfield?.tW ?? 8,
+          tH: tfield?.tH ?? 8,
+          tField: tfield?.data ?? [],
+          density: particleDensity,
+          speed,
+          startAt: animStartAt,
+        }).catch(() => {});
+      }
     } catch (e) {
       console.error("粒子光效消散动画异常:", e);
       window.clearTimeout(watchdog);
@@ -369,34 +334,26 @@ function buildColorField(root: HTMLElement, w: number, h: number): Promise<Color
   });
 }
 
-/** 播放一次粒子光效消散动画。
- * origin：remote 模式下便签窗口屏幕坐标（CSS px）；粒子出生网格直接 +origin 转屏幕坐标。
- * onStart(realStartAt)：动画真正首帧时刻回调（与 mask 同 epoch）→ 供 remote 模式此刻同步粒子层 startAt。 */
+/** 播放一次粒子光效消散动画。 */
 function runGlow(
   root: HTMLElement,
   particleDensity: number,
   speed: number,
   onDone: () => void,
   mode: "self" | "remote" = "self",
-  origin = { x: 0, y: 0 },
-  onStart?: (realStartAt: number) => void,
 ): () => void {
   const myGen = ++glowGen; // 本动画实例代次：作废上一轮遗留的延时清理
   const remote = mode === "remote";
-  const layerOriginX = origin.x; // remote：粒子层用屏幕坐标，网格直接 +origin
-  const layerOriginY = origin.y;
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
   const w = window.innerWidth;
   const h = window.innerHeight;
   const density = Math.max(0, Math.min(100, particleDensity)) / 100;
   const k = Math.max(0.25, Math.min(4, 100 / Math.max(10, speed))); // 速度系数：200%→0.5（时长减半）
 
-  // ---- 时序参数（整体 ~4.8s：比上一版 3.6s 再拉长 ~33%，消散更平缓持久）----
-  // 智能三批次逐级起爆：首批 ~0ms → 第二批 ~43% → 第三批 ~74%，每批起点由最远点采样自动选最空区域
-  const duration = Math.round(4800 * k); // 总时长（后半段透明度淡出代替铺满全窗）
-  const wipe = Math.round(2900 * k); // 主体消散窗口 ms（随总时长等比拉长，保持原有蔓延观感）
-  const secondBatchAt = Math.round(duration * 0.43); // 第二批区域在动画 ~43% 时起爆（落在 40%~50%）
-  const thirdBatchAt = Math.round(duration * 0.74); // 第三批区域在动画 ~74% 时起爆（落在 70%~80%）
+  // ---- 时序参数（整体 ~2.4s：主体消散 1400ms + 透明度淡出收尾）
+  const wipe = Math.round(1400 * k); // 主体消散窗口 ms
+  const secondBatchAt = Math.round(960 * k); // 第二批区域在动画 ~40% 时起爆
+  const duration = Math.round(2400 * k); // 总时长（后半段透明度淡出代替铺满全窗）
 
   // ---- 粒子覆盖层 canvas（WebGL：GPU 单次 draw call 渲染点精灵）。
   // remote 模式（粒子交给全屏透明粒子层窗口渲染，可飘出便签边界）下本窗口不建 canvas/GL。----
@@ -513,13 +470,10 @@ function runGlow(
   let field: ColorField | null = null;
   const sampleThemeColor = (x: number, y: number): [number, number, number] => {
     if (!field) return [235, 240, 255]; // 兜底亮白
-    // 物理像素统一后：x/y 为物理 px（相对窗口），/dpr 转回 CSS px 再对颜色场采样
-    const lx = x / dpr;
-    const ly = y / dpr;
-    let fx = Math.round((lx / w) * field.fw);
+    let fx = Math.round((x / w) * field.fw);
     if (fx < 0) fx = 0;
     else if (fx >= field.fw) fx = field.fw - 1;
-    let fy = Math.round((ly / h) * field.fh);
+    let fy = Math.round((y / h) * field.fh);
     if (fy < 0) fy = 0;
     else if (fy >= field.fh) fy = field.fh - 1;
     const idx = (fy * field.fw + fx) * 4;
@@ -549,9 +503,7 @@ function runGlow(
   const mimg = mctx.createImageData(mw, mh);
   const mpx32 = new Uint32Array(mimg.data.buffer); // 32 位写入，仅改最高字节(alpha)
 
-  // ---------- 智能三批次起爆：贪心最远点采样，优先填补"最空"区域（视觉连贯：各前锋先后推进、min 叠加无断层）----------
-  // 思路：每批新起爆点都选"距已有所有起爆点最远"的位置（即当前最空 / 最晚被波及的区域），
-  // 让消散从多个方向逐级吞掉空隙，避免随机撒点导致的局部堆积或留白。
+  // 区域生成（每次播放重新生成 → 每次观感不同）
   const diag = Math.hypot(w, h);
   interface DissolveRegion { x: number; y: number; t0: number; scale: number }
   const regions: DissolveRegion[] = [];
@@ -561,52 +513,26 @@ function runGlow(
     t0,
     scale: 1.1 + Math.random() * 0.25,
   });
-  // 与 propagate 一致的有效距离度量（上消散快、下消散慢 → 等效距离 上×0.4/下×1.8），
-  // 使"最空"判定与真实蔓延速度对齐。
-  const effDist = (x: number, y: number, r: DissolveRegion): number => {
-    const dx = x - r.x;
-    const dy = y - r.y;
-    return Math.hypot(dx, dy < 0 ? dy * 0.4 : dy * 1.8);
-  };
-  // 候选网格（不必太密，~每 28px 一个采样点即可）
-  const gridStep = Math.max(20, Math.min(40, Math.round(Math.min(w, h) / 10)));
-  const cands: { x: number; y: number }[] = [];
-  for (let yy = gridStep / 2; yy < h; yy += gridStep) {
-    for (let xx = gridStep / 2; xx < w; xx += gridStep) cands.push({ x: xx, y: yy });
+  // 下 1/3：必须随机某点（首批）
+  regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, Math.random() * 60));
+  // 上 1/3：随机 左 / 右 / 上 侧边缘发起（首批，贴在对应边缘上）
+  const side = Math.random();
+  if (side < 1 / 3) {
+    regions.push(makeRegion(Math.random() * 30, (Math.random() / 3) * h, Math.random() * 60)); // 左侧边
+  } else if (side < 2 / 3) {
+    regions.push(makeRegion(w - Math.random() * 30, (Math.random() / 3) * h, Math.random() * 60)); // 右侧边
+  } else {
+    regions.push(makeRegion(Math.random() * w, Math.random() * 30, Math.random() * 60)); // 上侧边
   }
-  // 贪心最远点：逐个选出距"已有所有起点（含本批已选）"最远的点 → 填补当前最大空隙；
-  // 加微小随机扰动避免每次都落在完全相同的极端角点，使观感自然且每次不同。
-  const pickFarthest = (count: number, t0: number, jitterHalf: number): void => {
-    for (let n = 0; n < count; n++) {
-      let best: { x: number; y: number } | null = null;
-      let bestD = -1;
-      for (const c of cands) {
-        let md = Infinity;
-        for (const r of regions) {
-          const d = effDist(c.x, c.y, r);
-          if (d < md) md = d;
-        }
-        md += (Math.random() * 0.05) * diag; // 轻微扰动：避免每次都选同一极端角点
-        if (md > bestD) {
-          bestD = md;
-          best = c;
-        }
-      }
-      if (best) {
-        regions.push(makeRegion(best.x, best.y, t0 + (Math.random() * 2 - 1) * jitterHalf));
-      }
-    }
-  };
-
-  // —— 首批（~0ms）：第 1 点落于下 1/3（自然从底部升起），第 2 点取距其最远处 → 仅 1~2 处率先消散 ——
-  regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, Math.random() * 40));
-  pickFarthest(1, Math.random() * 40, 45);
-
-  // —— 第二批（~43%）：在剩余最空区域补 2~3 个起爆点 ——
-  pickFarthest(2 + (Math.random() < 0.5 ? 1 : 0), secondBatchAt, 60);
-
-  // —— 第三批（~74%）：继续填补最空区域 2~3 个，确保全幅衔接、消散末段仍有新区域接力 ——
-  pickFarthest(2 + (Math.random() < 0.5 ? 1 : 0), thirdBatchAt, 70);
+  // 中 1/3：必发 1 点（动画 40% 时起爆）
+  regions.push(makeRegion(Math.random() * w, (1 / 3 + Math.random() / 3) * h, secondBatchAt + Math.random() * 120 - 60));
+  // 补充起爆点（各 35% 概率，动画 40% 时）：下/上部各可能再多 1 点
+  if (Math.random() < 0.35) {
+    regions.push(makeRegion(Math.random() * w, (2 / 3 + Math.random() / 3) * h, secondBatchAt + Math.random() * 120 - 60));
+  }
+  if (Math.random() < 0.35) {
+    regions.push(makeRegion(Math.random() * w, Math.random() * 30, secondBatchAt + Math.random() * 120 - 60));
+  }
   const noisePhase = Math.random() * 100; // 噪声相位随机 → 每次前沿弯曲不同
 
   // 确定性值噪声
@@ -672,8 +598,10 @@ function runGlow(
       Tfield[my * mw + mx] = dissolveTimeAt(nx, ny);
     }
   }
-  // （T 场仅用于本窗口 mask 渲染；remote 模式粒子位置/时刻由下方发射网格 lastEmit 原样转发，
-  //   不再用 T 场在粒子层二次重建 → 单一真相源、消除固定偏移。）
+  // remote 模式：把 T 场交给全屏粒子层窗口，使粒子生成时机与便签 mask 消散同步
+  if (remote) {
+    lastTField = { tW: mw, tH: mh, data: Array.from(Tfield) };
+  }
 
   // ---- mask 裁切：把 T 场逐像素 alpha 渲染到蒙版 canvas，驱动便签平滑消散 ----
   const setMask = (url: string): void => {
@@ -695,20 +623,6 @@ function runGlow(
       mpx32[p++] = ((a * 255) & 0xff) << 24 | 0x00ffffff; // RGB 白 + alpha
     }
     mctx.putImageData(mimg, 0, 0);
-  };
-  // 剩余可见像素占比（0=全消失，1=全可见）。用同一 T 场逐像素计算，
-  // 让便签整体透明度与 mask 擦除、粒子起爆严格同拍（与速度无关）——解决“便签还亮着、
-  // 粒子已飞走”的脱节间隔：剩下的可见面积越少，整体越暗，二者永远不会错拍。
-  const coverageAt = (age: number): number => {
-    let sum = 0;
-    const n = Tfield.length;
-    for (let i = 0; i < n; i++) {
-      let a = (age - Tfield[i]) / featherMs;
-      if (a < 0) a = 0;
-      else if (a > 1) a = 1;
-      sum += 1 - a; // dissolve：可见→消散，此处为“可见占比”
-    }
-    return sum / n;
   };
   // 蒙版替换：先解码（new Image onload）再 set，避免逐帧 dataURL 闪烁
   let lastMaskPush = -1;
@@ -733,9 +647,6 @@ function runGlow(
   };
 
   // ---- 发射点网格：铺满整面，每个点在自身 T 时刻恰好生成一粒粒子 ----
-  // 关键一致性：粒子出生点 = 消散点（同一 dissolveTimeAt 网格），出生时刻 = 消散时刻。
-  // remote 模式下网格坐标直接 +origin（屏幕坐标）存入 lastEmit，粒子层原样使用，
-  // 不再用 T 场在粒子层二次重建位置 → 从根上消除「固定偏移间距」。
   const emitSpacing = 3;
   const ecx = Math.max(2, Math.ceil(w / emitSpacing));
   const ecy = Math.max(2, Math.ceil(h / emitSpacing));
@@ -746,16 +657,12 @@ function runGlow(
   const emitDone = new Uint8Array(ecount);
   let ei = 0;
   let maxEmitT = 0;
-  // remote：屏幕坐标偏移（粒子层窗口已全屏铺满，原点 = 屏幕左上角，直接 +origin）
-  // 物理像素统一：nx/ny 为便签局部 CSS px，× dpr 转物理 px，再 + origin（物理 px）→ 屏幕物理 px。
-  const ox = remote ? layerOriginX : 0;
-  const oy = remote ? layerOriginY : 0;
   for (let iy = 0; iy < ecy; iy++) {
     for (let ix = 0; ix < ecx; ix++) {
       const nx = (ix + 0.5) * emitSpacing;
       const ny = (iy + 0.5) * emitSpacing;
-      emitX[ei] = nx * dpr + ox;
-      emitY[ei] = ny * dpr + oy;
+      emitX[ei] = nx;
+      emitY[ei] = ny;
       const T = dissolveTimeAt(nx, ny);
       emitT[ei] = T;
       if (T > maxEmitT) maxEmitT = T;
@@ -772,10 +679,6 @@ function runGlow(
     if (b < 0) b = 0;
     else if (b >= binCount) b = binCount - 1;
     binPts[b].push(i);
-  }
-  // remote：把「屏幕坐标发射网格 + 分桶」交给粒子层（单一真相源，原样使用，不二次重建位置）
-  if (remote) {
-    lastEmit = { ex: emitX, ey: emitY, et: emitT, bins: binPts, n: ecount };
   }
 
   // ---- 粒子池（SoA + swap-remove；初速度/加速度全粒子一致，等加速上升）----
@@ -802,9 +705,9 @@ function runGlow(
   // 在 (x,y) 生成一粒发光微粒；颜色采样自该生成区域的主题色。
   const spawn = (x: number, y: number, age: number): void => {
     if (pcount >= maxP) return;
-    // 寿命加长（3000~5200ms，随速度缩放）：慢速下仍有充足漂浮时间，
+    // 寿命加长（1800~3400ms，随速度缩放）：粒子有充足时间飘出便签矩形边界，
     // 越过原始区域向外扩散，靠自身寿命/透明度衰减自然消散（无矩形边界销毁约束）
-    let life = Math.round((3000 + Math.random() * 2200) * k);
+    let life = Math.round((1800 + Math.random() * 1600) * k);
     const fit = duration - age - 40;
     if (fit < 120) return;
     if (life > fit) life = fit;
@@ -812,13 +715,13 @@ function runGlow(
     px[i] = x;
     py[i] = y;
     pang[i] = (Math.random() - 0.5) * ((110 * Math.PI) / 180); // 随机左右偏转 ±55°
-    pv0[i] = (10 + Math.random() * 20) * dpr; // 初速更低（px/s）：缓慢起飘，节奏更舒缓（×resp 转物理 px/s）
-    pv1[i] = 330 * dpr; // 加速度进一步降低（px/s²）：整体上升更平缓、更具漂浮感（×resp 转物理）
+    pv0[i] = 20 + Math.random() * 40; // 初速度略随机（px/s，缓慢起飘，节奏更自然）
+    pv1[i] = 650; // 加速度相同（px/s²，明显加速）
     plife[i] = life;
     page[i] = 0;
     psize[i] = 1.8; // 亮核 1.8px
     pseed[i] = Math.random() * Math.PI * 2;
-    psway[i] = (Math.random() - 0.5) * 60 * dpr; // ±30 px/s 恒定向漂移（横向更自由，×resp 转物理）
+    psway[i] = (Math.random() - 0.5) * 60; // ±30 px/s 恒定向漂移（横向更自由）
     const [r, g, b] = sampleThemeColor(x, y);
     pr[i] = r / 255; pg[i] = g / 255; pb[i] = b / 255;
   };
@@ -874,19 +777,21 @@ function runGlow(
     if (endedLocal) return;
     if (!started) {
       started = true;
-      prevNow = now; // start 已在 beginLoop 锚定为粒子层 startAt 同一时刻（两窗 age 同基准）
+      start = now;
+      prevNow = now;
     }
     const dt = Math.min(0.05, Math.max(0.001, (now - prevNow) / 1000));
     prevNow = now;
-    // age 用 Date.now() 计算（与 start 同一时钟）：与粒子层严格同基准（见 beginLoop 注释）
-    const age = Date.now() - start;
+    const age = now - start;
 
     // ---- 推进 mask 消散 + 发射点按各自 T 时刻生成粒子 ----
     pushMask(age, false);
-    // 便签整体透明度跟随「剩余可见比例」联动：剩下的可见面积越少整体越暗，
-    // 与粒子碎裂、飞散严格同步（任意速度下都不会出现“便签还亮着、粒子已飞走”的间隔）。
-    const cov = coverageAt(age);
-    root.style.opacity = (0.1 + 0.9 * cov).toFixed(3);
+    // 动画后 50%：便签整体透明度 100% → 50% 淡出
+    const fadeHalf = duration * 0.5;
+    if (age > fadeHalf) {
+      const p = Math.min(1, (age - fadeHalf) / fadeHalf);
+      root.style.opacity = (1 - 0.5 * p).toFixed(3);
+    }
     // ---- 粒子（仅 self 模式在本窗口渲染；remote 模式粒子由全屏粒子层窗口渲染）----
     if (!remote) {
       // 按粒子数量节流发射：density 越低，保留的发射点比例越小（整面均匀变稀）；
@@ -930,7 +835,7 @@ function runGlow(
         const speed = pv0[i] + pv1[i] * (a / 1000);
         const dx = Math.sin(pang[i]);
         const dy = -Math.cos(pang[i]); // 向上为负 y
-        const sway = Math.sin(a * 0.004 + pseed[i]) * 40 * dpr; // 水平轻摆 ±40px/s（×resp 转物理）
+        const sway = Math.sin(a * 0.004 + pseed[i]) * 40; // 水平轻摆 ±40px/s（轨迹灵动）
         px[i] += (dx * speed + psway[i] + sway) * dt;
         py[i] += dy * speed * dt;
         const t = 1 - u;
@@ -938,9 +843,8 @@ function runGlow(
         if (alpha < 0.02) continue;
         const haloR = psize[i] * 1.25;
         const o = drawCount * 7;
-        // px/py 已是物理 px（emit 网格物理化），直接输出，u_res = canvas.width（物理 px）
-        glData[o] = px[i];
-        glData[o + 1] = py[i];
+        glData[o] = px[i] * dpr;
+        glData[o + 1] = py[i] * dpr;
         glData[o + 2] = haloR * 2 * dpr;
         glData[o + 3] = alpha;
         glData[o + 4] = pr[i];
@@ -983,13 +887,6 @@ function runGlow(
     if (endedLocal) return;
     renderMask(0);
     setMask(maskCanvas.toDataURL());
-    // 统一时间基准：start 锚定在本函数执行的此刻（= 传给粒子层的 startAt）。
-    // 便签 mask 与 remote 粒子层用完全相同的 age = now - start 推进 → 粒子出生时刻
-    // 与 mask 擦除时刻严格对齐。⚠️ 必须用 Date.now()（系统时钟）：startAt 要跨窗口
-    // 传给粒子层，performance.now() 在不同 WebView 页面的时间原点不同（会产生固定
-    // 偏差：粒子涌出/提前消失），Date.now() 全系统一致，两窗严格同步。
-    start = Date.now();
-    if (onStart) onStart(start);
     try {
       root.style.clipPath = "";
       root.style.boxShadow = "none";
