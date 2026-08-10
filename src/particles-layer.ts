@@ -431,13 +431,12 @@ function setupGL(): boolean {
     precision mediump float;
     varying float v_alpha;
     varying vec3 v_color;
+    uniform sampler2D u_sprite;
     void main() {
-      vec2 d = gl_PointCoord - vec2(0.5);
-      float r2 = dot(d, d);
-      if (r2 > 0.25) discard;
-      float r = sqrt(r2);
-      float a = clamp((0.3 - r) / 0.06, 0.0, 1.0);
-      gl_FragColor = vec4(v_color * 1.5, v_alpha * a);
+      // 圆形发光纹理：alpha 决定形状（点精灵在部分驱动上 discard 圆形不可靠 → 用纹理兜底）
+      vec4 c = texture2D(u_sprite, gl_PointCoord);
+      if (c.a < 0.01) discard;
+      gl_FragColor = vec4(v_color * 1.5, v_alpha * c.a);
     }`;
   const compile = (type: number, src: string): WebGLShader | null => {
     const sh = gl!.createShader(type);
@@ -460,6 +459,33 @@ function setupGL(): boolean {
   aParamLoc = gl.getAttribLocation(prog, "a_param");
   aColorLoc = gl.getAttribLocation(prog, "a_color");
   gl.uniform2f(gl.getUniformLocation(prog, "u_res"), canvas.width, canvas.height);
+  // ---- 圆形发光精灵纹理（径向渐变：中心实、边缘透明圆）----
+  const spriteLoc = gl.getUniformLocation(prog, "u_sprite");
+  if (spriteLoc) gl.uniform1i(spriteLoc, 0);
+  const SS = 32;
+  const spr = document.createElement("canvas");
+  spr.width = SS;
+  spr.height = SS;
+  const sctx = spr.getContext("2d");
+  if (sctx) {
+    const g = sctx.createRadialGradient(SS / 2, SS / 2, 0, SS / 2, SS / 2, SS / 2);
+    g.addColorStop(0, "rgba(255,255,255,1)");
+    g.addColorStop(0.35, "rgba(255,255,255,0.75)");
+    g.addColorStop(0.75, "rgba(255,255,255,0.2)");
+    g.addColorStop(1, "rgba(255,255,255,0)");
+    sctx.fillStyle = g;
+    sctx.fillRect(0, 0, SS, SS);
+  }
+  const tex = gl.createTexture();
+  if (tex) {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, spr);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  }
   buf = gl.createBuffer();
   gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   gl.viewport(0, 0, canvas.width, canvas.height);
