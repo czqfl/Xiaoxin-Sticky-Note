@@ -2179,8 +2179,11 @@ export function mountNoteApp(noteId: string, preset = "") {
         // 关闭动画：默认粒子光效（鸿蒙通知删除同款·与呼出共用同一套粒子）；火焰模式（设置值 "erode"，历史命名）用火焰消散；inhale=粒子吸入。
         if (s.particle_mode === "erode") requestFlameDissolveClose(finish, intensity, speed);
         else if (s.particle_mode === "inhale") requestInhaleDissolveClose(finish, intensity, speed);
-        // particle（默认粒子消散）：用全屏透明粒子层窗口渲染，粒子不被窗口框住（remote=true）
-        else requestGlowDissolveClose(finish, intensity, speed, true);
+        // particle（默认粒子消散）：粒子在**便签窗口内**渲染（self 模式，remote=false）——
+        // 与 mask 同窗口、同坐标系、同帧循环，粒子出生点=消散点、出生时刻=擦除时刻，
+        // 从根上消除跨窗口（全屏粒子层）的坐标/缩放/时序错位问题（粒子不飘出便签窗口，
+        // 但保证轨迹与便签消失严格同步、绝不错位）。
+        else requestGlowDissolveClose(finish, intensity, speed);
       })
       .catch(() => {
         if (!closing) return;
