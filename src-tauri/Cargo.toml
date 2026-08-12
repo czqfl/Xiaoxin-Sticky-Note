@@ -26,7 +26,6 @@ base64 = "0.22"
 uuid = { version = "1", features = ["v4"] }
 chrono = "0.4"
 reqwest = { version = "0.12", features = ["json"] }
-sha2 = "0.10"
 arboard = "3"
 # 透明主题原生亚克力：SetWindowCompositionAttribute（未文档化 API，运行时 GetProcAddress）
 # 圆角由 CSS border-radius 负责，不再使用 DWM 圆角（见 main.rs 说明）

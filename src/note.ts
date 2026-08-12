@@ -10,9 +10,7 @@ import {
   markNoteClosed,
   getOpenNotes,
   newNoteId,
-  translate,
   readMdCustom,
-  saveSettings,
   formatWithLLM,
   openSettingsWindow,
   setAcrylic,
@@ -38,8 +36,6 @@ import {
   getSettings,
   getShortcut,
   onSettingsChanged,
-  setSettings,
-  TARGET_LANGUAGES,
   normalizeGlassPct,
   normalizeOpacity,
 } from "./settings";
@@ -47,12 +43,6 @@ import {
 const SAVE_DELAY = 500;
 
 // ---- 直观的单色图标（Lucide 风格，跟随文字颜色，见图知义）----
-// 翻译：languages 图标（左侧“文”笔画 + 右侧 A，一眼看出是翻译）
-const ICON_TRANSLATE = `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m5 8 6 6"/><path d="m4 14 6-6 2-3"/><path d="M2 5h12"/><path d="M7 2h1"/><path d="m22 22-5-10-5 10"/><path d="M14 18h6"/></svg>`;
-// 复制：clipboard-copy 图标（两个叠放的方框）
-const ICON_COPY = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>`;
-// 复制成功：对勾
-const ICON_CHECK = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>`;
 // 最大化：浏览器“框框”图标（四角外扩）
 const ICON_MAX = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>`;
 // 还原（已最大化时显示）：两个重叠方框
@@ -109,7 +99,6 @@ export function mountNoteApp(noteId: string, preset = "") {
           </button>
           <button type="button" class="cc-drop" id="tool-size-drop" title="选择字号">▾</button>
         </div>
-        <button class="icon-btn active" id="btn-translate-toggle" title="显示翻译区">${ICON_TRANSLATE}</button>
         <div class="tool-md" id="tool-md" title="Markdown 预览模式">
           <button type="button" class="md-btn" id="btn-md-preview" title="Markdown 预览：把内容渲染为 Markdown">预览</button>
           <button type="button" class="md-btn" id="btn-md-split" title="拆分预览：左侧编辑、右侧实时预览">拆分</button>
@@ -121,33 +110,6 @@ export function mountNoteApp(noteId: string, preset = "") {
       <div class="editor-area" id="editor-area">
         <div class="editor" id="editor" contenteditable="true" data-placeholder="写点什么..."></div>
         <iframe class="md-preview" id="md-preview"></iframe>
-      </div>
-      <div class="translate-panel" id="translate-panel">
-        <div class="translate-resizer" id="translate-resizer" title="拖动调整翻译区高度">
-          <span class="resizer-grip"><i class="rd"></i><i class="rd"></i><i class="rd"></i></span>
-        </div>
-        <div class="translate-head">
-          <span class="translate-title">翻译</span>
-          <div class="tr-fmt-wrap">
-            <button class="tr-fmt-btn" id="btn-fmt-format" title="翻译格式（点击切换命名风格）">翻译格式 <span class="caret">▾</span></button>
-            <div class="fmt-menu tr-fmt-menu hidden" id="fmt-format-menu">
-              <button type="button" class="fmt-menu-item" data-fmt="default">默认</button>
-              <button type="button" class="fmt-menu-item" data-fmt="snake">下划线 snake_case</button>
-              <button type="button" class="fmt-menu-item" data-fmt="camel">驼峰 camelCase</button>
-              <button type="button" class="fmt-menu-item" data-fmt="snake_abbr">缩写下划线（大模型）</button>
-              <button type="button" class="fmt-menu-item" data-fmt="camel_abbr">缩写驼峰（大模型）</button>
-            </div>
-          </div>
-          <select class="tr-target" id="tr-target" title="目标语言"></select>
-          <button class="icon-btn" id="btn-translate" title="翻译输入框内容">${ICON_TRANSLATE}</button>
-        </div>
-        <div class="translate-body">
-          <textarea class="translate-src" id="translate-src" placeholder="在此输入要翻译的内容，或在便签中选中文字后右键翻译…" rows="2"></textarea>
-          <div class="translate-dst-box">
-            <div class="translate-dst" id="translate-dst" contenteditable="true" data-placeholder="译文…"></div>
-            <button class="icon-btn btn-copy" id="btn-copy" title="复制译文">${ICON_COPY}</button>
-          </div>
-        </div>
       </div>
       <div class="cc-panel" id="tool-fg-panel" hidden></div>
       <div class="cc-panel" id="tool-bg-panel" hidden></div>
@@ -173,8 +135,6 @@ export function mountNoteApp(noteId: string, preset = "") {
   // 关闭动画期间抑制「保存中/已保存」状态提示（关闭会触发一次保存，但不应打扰关闭过程）；
   // 呼出/正常编辑时恢复显示。
   let suppressSaveStatus = false;
-  const btnTranslate = document.getElementById("btn-translate")!;
-  const btnCopy = document.getElementById("btn-copy") as HTMLButtonElement;
   const toolFg = document.getElementById("tool-fg") as HTMLInputElement;
   const toolBg = document.getElementById("tool-bg") as HTMLInputElement;
   const toolFgApply = document.getElementById("tool-fg-apply") as HTMLButtonElement;
@@ -183,25 +143,18 @@ export function mountNoteApp(noteId: string, preset = "") {
   const toolSizeMain = document.getElementById("tool-size-main") as HTMLButtonElement;
   const toolSizeDrop = document.getElementById("tool-size-drop") as HTMLButtonElement;
   const toolSizeNum = document.getElementById("tool-size-num") as HTMLSpanElement;
-  const btnTranslateToggle = document.getElementById("btn-translate-toggle")!;
   const btnMax = document.getElementById("btn-max")!;
   const editorArea = document.getElementById("editor-area") as HTMLElement;
   const mdPreview = document.getElementById("md-preview") as HTMLIFrameElement;
   const btnMdPreview = document.getElementById("btn-md-preview")!;
   const btnMdSplit = document.getElementById("btn-md-split")!;
   const btnFmt = document.getElementById("btn-fmt") as HTMLButtonElement;
-  const translateSrc = document.getElementById("translate-src") as HTMLTextAreaElement;
-  const translateDst = document.getElementById("translate-dst") as HTMLDivElement;
-  const trTarget = document.getElementById("tr-target") as HTMLSelectElement;
-  const btnFmtFormat = document.getElementById("btn-fmt-format") as HTMLButtonElement;
-  const fmtFormatMenu = document.getElementById("fmt-format-menu") as HTMLElement;
   const noteWindow = document.querySelector(".note-window") as HTMLElement;
   const winResizer = document.getElementById("win-resizer") as HTMLElement;
 
   let current: NoteData = {
     content: "",
     title: "",
-    translate: false,
     md: "none",
     pinned: true,
     created: Date.now(),
@@ -379,7 +332,7 @@ export function mountNoteApp(noteId: string, preset = "") {
       // markdown 预览区是独立 iframe，跨文档隔离，暂不纳入
       if (img.closest(".md-preview")) return;
       const imgs = Array.from(
-        document.querySelectorAll(".editor img, .translate-dst img")
+        document.querySelectorAll(".editor img")
       ) as HTMLImageElement[];
       const idx = imgs.indexOf(img);
       if (idx < 0) return;
@@ -389,15 +342,13 @@ export function mountNoteApp(noteId: string, preset = "") {
       );
     };
     editor.addEventListener("dblclick", onDbl);
-    const tr = document.getElementById("translate-dst");
-    if (tr) tr.addEventListener("dblclick", onDbl);
   }
 
   async function init() {
     try {
       const loaded = await loadNote(noteId);
       if (loaded) {
-        current = { width: 420, height: 440, title: "", translate: false, md: "none", ...loaded };
+        current = { width: 420, height: 440, title: "", md: "none", ...loaded };
         editor.innerHTML = loaded.content || "";
         titleInput.value = loaded.title || "";
         updatePin(loaded.pinned, false);
@@ -425,10 +376,8 @@ export function mountNoteApp(noteId: string, preset = "") {
         console.error("读取打开状态失败:", e);
       }
     }
-    applyTranslateVisibility();
     applyMdMode();
     await applyTheme();
-    await applyTranslateFormat();
     await applyMdTheme();
     updateMaxIcon();
     await refreshSettingsUI();
@@ -624,30 +573,11 @@ export function mountNoteApp(noteId: string, preset = "") {
     toolFgApply.title = `按当前颜色上色（${getShortcut("fg_color")}）`;
     toolBgApply.title = `按当前背景色上色（${getShortcut("bg_color")}）`;
     toolSizeWrap.title = `文字大小（增大 ${getShortcut("size_up")} / 减小 ${getShortcut("size_down")}）`;
-    btnTranslate.title = `翻译（${getShortcut("translate")}）`;
   }
-
-  // ---- 翻译区：目标语言下拉框（"自动"按设置的中英方向，其余为指定语言）----
-  function populateTargetSelect() {
-    trTarget.innerHTML = "";
-    const auto = document.createElement("option");
-    auto.value = "auto";
-    auto.textContent = "自动";
-    trTarget.appendChild(auto);
-    TARGET_LANGUAGES.forEach((l) => {
-      const opt = document.createElement("option");
-      opt.value = l.value;
-      opt.textContent = l.label;
-      trTarget.appendChild(opt);
-    });
-    trTarget.value = "auto";
-  }
-  populateTargetSelect();
 
   onSettingsChanged(() => {
     refreshSettingsUI();
     applyTheme();
-    applyTranslateFormat();
     applyMdTheme();
     applyBackground();
     applyGlassEnabled();
@@ -1195,25 +1125,6 @@ export function mountNoteApp(noteId: string, preset = "") {
   toolSizeMain.addEventListener("click", showSizeMenu);
   toolSizeDrop.addEventListener("click", showSizeMenu);
 
-  // ---- 每便签翻译开关：激活则变深色并显示翻译区，否则隐藏 ----
-  function applyTranslateVisibility() {
-    if (current.translate) {
-      translatePanel.classList.remove("hidden");
-      btnTranslateToggle.classList.add("active");
-      btnTranslateToggle.title = "隐藏翻译区";
-    } else {
-      translatePanel.classList.add("hidden");
-      btnTranslateToggle.classList.remove("active");
-      btnTranslateToggle.title = "显示翻译区";
-    }
-  }
-
-  btnTranslateToggle.addEventListener("click", () => {
-    current.translate = !current.translate;
-    applyTranslateVisibility();
-    scheduleSave();
-  });
-
   // ---- Markdown 预览/拆分：三个互斥态 none / preview / split（按每便签持久化）----
   // 建立/取回预览 iframe 的内部文档。仅首次写入骨架（md-base / md-theme 两个样式节点），
   // 之后只更新内容与样式，避免每次重渲染都 reload 造成闪烁与滚动复位。
@@ -1273,9 +1184,6 @@ export function mountNoteApp(noteId: string, preset = "") {
     // 纯预览态编辑器不可见
   }
 
-  // 当前翻译命名风格（默认值，加载设置后会被 applyTranslateFormat 覆盖）
-  let currentFormat = "default";
-
   // ---- 全局外观主题（light / 多个深色主题）：给 <html> 挂对应的 theme-<name> 类 ----
   async function applyTheme() {
     const s = await getSettings();
@@ -1288,17 +1196,6 @@ export function mountNoteApp(noteId: string, preset = "") {
     if (theme === "dark" || theme === "transparent") {
       root.classList.add("theme-dark");
     }
-  }
-
-  /** 翻译命名风格：从设置读取，刷新按钮高亮与当前状态 */
-  async function applyTranslateFormat() {
-    const s = await getSettings();
-    currentFormat = s.translate_format || "default";
-    const items = fmtFormatMenu.querySelectorAll<HTMLButtonElement>(".fmt-menu-item");
-    items.forEach((it) => {
-      it.classList.toggle("active", it.dataset.fmt === currentFormat);
-    });
-    btnFmtFormat.classList.toggle("active", currentFormat !== "default");
   }
 
   // ---- Markdown 主题（来自设置，作用于预览区）----
@@ -1761,269 +1658,7 @@ export function mountNoteApp(noteId: string, preset = "") {
       run(() => changeSelectionFontSize(2));
     } else if (matchShortcut("size_down", e)) {
       run(() => changeSelectionFontSize(-2));
-    } else if (matchShortcut("translate", e)) {
-      e.preventDefault();
-      translateSelection(); // 翻译编辑器中选中的文字
     }
-  });
-
-  // ---- 翻译命名风格（翻译格式）：默认 / 下划线 / 驼峰 / 缩写下划线 / 缩写驼峰 ----
-  // 菜单自按钮向上弹出；点选项把偏好存入设置（跨便签窗口与重启后保持一致）。
-  function closeFmtFormatMenu() {
-    fmtFormatMenu.classList.add("hidden");
-    document.removeEventListener("mousedown", onFmtFormatOutside, true);
-    document.removeEventListener("keydown", onFmtFormatKey, true);
-  }
-  function onFmtFormatOutside(e: MouseEvent) {
-    if (!fmtFormatMenu.contains(e.target as Node) && !btnFmtFormat.contains(e.target as Node)) {
-      closeFmtFormatMenu();
-    }
-  }
-  function onFmtFormatKey(e: KeyboardEvent) {
-    if (e.key === "Escape") closeFmtFormatMenu();
-  }
-  btnFmtFormat.addEventListener("click", (e) => {
-    e.stopPropagation();
-    if (!fmtFormatMenu.classList.contains("hidden")) {
-      closeFmtFormatMenu();
-      return;
-    }
-    fmtFormatMenu.classList.remove("hidden");
-    setTimeout(() => {
-      document.addEventListener("mousedown", onFmtFormatOutside, true);
-      document.addEventListener("keydown", onFmtFormatKey, true);
-    }, 0);
-  });
-  fmtFormatMenu.querySelectorAll<HTMLButtonElement>(".fmt-menu-item").forEach((it) => {
-    it.addEventListener("click", async () => {
-      const fmt = it.dataset.fmt || "default";
-      currentFormat = fmt;
-      fmtFormatMenu
-        .querySelectorAll(".fmt-menu-item")
-        .forEach((x) => x.classList.toggle("active", x === it));
-      btnFmtFormat.classList.toggle("active", fmt !== "default");
-      closeFmtFormatMenu();
-      // 持久化到设置，使其它便签窗口与下次启动保持一致
-      try {
-        const s = await getSettings();
-        s.translate_format = fmt;
-        await saveSettings(s);
-        setSettings(s); // 更新缓存并派发变更，使其它窗口联动
-      } catch (err) {
-        console.error("保存翻译格式失败:", err);
-      }
-    });
-  });
-
-  // 英文短语 → snake_case / camelCase（供“下划线 / 驼峰”翻译格式使用）
-  function toSnakeCase(s: string): string {
-    return s
-      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
-      .replace(/[\s\-./\\]+/g, "_")
-      .replace(/[^a-zA-Z0-9_]+/g, "_")
-      .replace(/_+/g, "_")
-      .replace(/^_+|_+$/g, "")
-      .toLowerCase();
-  }
-  function toCamelCase(s: string): string {
-    const snake = toSnakeCase(s);
-    return snake.replace(/_([a-zA-Z0-9])/g, (_m, c: string) => c.toUpperCase());
-  }
-
-  // ---- 翻译 ----
-  // 实际调用后端翻译并把结果写入译文区。
-  // 多行文本逐行翻译后按换行拼接，避免翻译服务把换行吞掉、只译出第一行。
-  async function runTranslate(text: string) {
-    const fmt = currentFormat;
-    const trimmed = (text || "").trim();
-    if (!trimmed) {
-      translateDst.textContent = "没有可翻译的内容";
-      return;
-    }
-
-    // 缩写类：跳过传统翻译，直接走大模型生成命名风格标识符
-    if (fmt === "snake_abbr" || fmt === "camel_abbr") {
-      translateDst.textContent = "生成中…";
-      translateDst.classList.add("loading");
-      try {
-        const style = fmt === "snake_abbr" ? "id_snake" : "id_camel";
-        const id = await formatWithLLM(trimmed, style);
-        translateDst.classList.remove("loading");
-        translateDst.textContent = id || "（无结果）";
-      } catch (err) {
-        translateDst.classList.remove("loading");
-        translateDst.textContent = String(err);
-      }
-      return;
-    }
-
-    // 默认 / 下划线 / 驼峰：传统翻译，再按需转换为命名风格
-    const transform = (s: string): string =>
-      fmt === "snake" ? toSnakeCase(s) : fmt === "camel" ? toCamelCase(s) : s;
-
-    const lines = trimmed
-      .split(/\r?\n/)
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0);
-
-    if (lines.length <= 1) {
-      translateDst.textContent = "翻译中…";
-      translateDst.classList.add("loading");
-      try {
-        const res = await translate(trimmed, trTarget.value || "auto");
-        translateDst.classList.remove("loading");
-        translateDst.textContent = transform(res.text || "") || "（无结果）";
-      } catch (err) {
-        translateDst.classList.remove("loading");
-        translateDst.textContent = String(err);
-      }
-      return;
-    }
-
-    // 多行：逐行翻译，按原换行结构拼接，每行分别套用命名风格转换
-    translateDst.textContent = "翻译中…";
-    translateDst.classList.add("loading");
-    try {
-      const results = await Promise.all(
-        lines.map((l) =>
-          translate(l, trTarget.value || "auto")
-            .then((r) => transform(r.text || l))
-            .catch(() => transform(l))
-        )
-      );
-      translateDst.classList.remove("loading");
-      translateDst.textContent = results.join("\n");
-    } catch (err) {
-      translateDst.classList.remove("loading");
-      translateDst.textContent = String(err);
-    }
-  }
-
-  // 翻译按钮：优先翻译编辑器中选中的文字；无选中时再翻译输入框内容
-  async function translateFromInput() {
-    const text = translateSrc.value.trim();
-    if (!text) {
-      translateDst.textContent = "请在上方输入框输入要翻译的内容，或在便签中选中文字";
-      return;
-    }
-    await runTranslate(text);
-  }
-
-  // 统一入口：翻译编辑器中选中的文字（若有），否则翻译输入框内容。
-  // 供翻译按钮、快捷键、右键菜单共用。
-  async function translateSelection() {
-    const sel = window.getSelection();
-    let text = sel && !sel.isCollapsed ? sel.toString().trim() : "";
-    const off = getSelectionOffsets();
-    // 实时选区为空时，回退到失焦前保存的选区（点按钮/右键菜单时编辑器可能已失焦）
-    if (!text && savedRange) {
-      text = savedRange.toString().trim();
-    }
-    if (text) {
-      // 翻译区未打开时（如仅通过右键菜单触发），自动弹出，否则结果不可见
-      if (!current.translate) {
-        current.translate = true;
-        applyTranslateVisibility();
-        scheduleSave();
-      }
-      translateSrc.value = text;
-      await runTranslate(text);
-      restoreSelectionOffsets(off);
-    } else {
-      await translateFromInput();
-    }
-  }
-
-  btnTranslate.addEventListener("click", () => translateSelection());
-
-  // 复制译文
-  btnCopy.addEventListener("click", async () => {
-    const text = translateDst.textContent || "";
-    if (!text || text === "翻译中…" || text === "没有可翻译的内容" || text === "请先在便签中选中要翻译的文字") {
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(text);
-      const oldTitle = btnCopy.title;
-      btnCopy.innerHTML = ICON_CHECK;
-      btnCopy.classList.add("copied");
-      btnCopy.title = "已复制 ✓";
-      window.setTimeout(() => {
-        btnCopy.innerHTML = ICON_COPY;
-        btnCopy.classList.remove("copied");
-        btnCopy.title = oldTitle;
-      }, 1200);
-    } catch (e) {
-      console.error("复制失败:", e);
-    }
-  });
-
-  // ---- 编辑器右键菜单：选中文字后右键可"翻译" ----
-  const ctxMenu = document.createElement("div");
-  ctxMenu.className = "ctx-menu";
-  ctxMenu.id = "ctx-menu";
-  ctxMenu.innerHTML = `<button class="ctx-item" id="ctx-translate">翻译选中文字</button>`;
-  ctxMenu.style.display = "none";
-  document.body.appendChild(ctxMenu);
-  const ctxTranslate = ctxMenu.querySelector("#ctx-translate") as HTMLButtonElement;
-
-  editor.addEventListener("contextmenu", (e) => {
-    const sel = window.getSelection();
-    const text = sel && sel.toString().trim();
-    if (!text) return; // 无选区时走浏览器默认菜单
-    e.preventDefault();
-    ctxMenu.style.display = "block";
-    // 防止菜单超出窗口
-    const x = Math.min(e.clientX, window.innerWidth - 160);
-    const y = Math.min(e.clientY, window.innerHeight - 40);
-    ctxMenu.style.left = x + "px";
-    ctxMenu.style.top = y + "px";
-  });
-  ctxTranslate.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    ctxMenu.style.display = "none";
-    translateSelection();
-  });
-  // 点别处或按 Esc 关闭菜单
-  document.addEventListener("mousedown", (e) => {
-    if (ctxMenu.style.display === "none") return;
-    if (!ctxMenu.contains(e.target as Node)) ctxMenu.style.display = "none";
-  });
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape" && ctxMenu.style.display !== "none") {
-      ctxMenu.style.display = "none";
-    }
-  });
-
-  // ---- 翻译区域可拖动调整高度 ----
-  const translatePanel = document.querySelector(".translate-panel") as HTMLElement;
-  const resizer = document.getElementById("translate-resizer")!;
-  let resizing = false;
-  let startY = 0;
-  let startH = 0;
-  resizer.addEventListener("mousedown", (e) => {
-    e.preventDefault();
-    resizing = true;
-    startY = e.clientY;
-    startH = translatePanel.getBoundingClientRect().height;
-    document.body.style.cursor = "ns-resize";
-    document.body.style.userSelect = "none";
-  });
-  document.addEventListener("mousemove", (e) => {
-    if (!resizing) return;
-    const delta = startY - e.clientY; // 向上拖增大
-    let h = startH + delta;
-    const minH = 64;
-    const maxH = Math.max(minH, window.innerHeight - 120);
-    h = Math.max(minH, Math.min(maxH, h));
-    translatePanel.style.height = h + "px";
-    translatePanel.style.maxHeight = h + "px";
-  });
-  document.addEventListener("mouseup", () => {
-    if (!resizing) return;
-    resizing = false;
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
   });
 
   // ---- 右下角自定义缩放手柄（替代系统 resize，避免透明窗口白屏 / 投影边框）----

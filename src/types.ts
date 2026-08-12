@@ -2,8 +2,6 @@ export interface NoteData {
   content: string;
   /** 用户自定义标题（可空） */
   title?: string;
-  /** 是否展示翻译区（每便签独立配置） */
-  translate?: boolean;
   /** Markdown 预览模式：none / preview / split（每便签独立配置） */
   md?: string;
   pinned: boolean;
@@ -29,15 +27,6 @@ export interface NoteMeta {
 
 export interface Settings {
   shortcuts: Record<string, string>;
-  translation_provider: string;
-  /** 输入含中文时的翻译目标语种 */
-  target_when_cjk: string;
-  /** 输入为非中文（英文等）时的翻译目标语种 */
-  target_when_latin: string;
-  baidu_appid: string;
-  baidu_key: string;
-  youdao_appkey: string;
-  youdao_secret: string;
   /** Markdown 预览主题：default / github / rose-pine / solarized / custom */
   md_theme: string;
   /** 自定义主题 CSS 文件在磁盘上的绝对路径（md_theme === "custom" 时生效） */
@@ -60,8 +49,6 @@ export interface Settings {
   llm_api_key?: string;
   /** 大模型模型名（可空；空 = gpt-4o-mini） */
   llm_model?: string;
-  /** 翻译结果命名风格：default / snake / camel / snake_abbr / camel_abbr */
-  translate_format?: string;
   /** 独立“毛玻璃效果”开关：开启后内容面板叠加磨砂（透明背景磨砂桌面、图片背景磨砂图片） */
   glass_enabled?: boolean;
   /** 毛玻璃模糊强度（px），仅 glass_enabled 开启时生效 */
@@ -74,9 +61,4 @@ export interface Settings {
   particle_mode?: string;
   /** 粒子动画速度（百分比，100=原速，50=半速，200=2倍速）；对所有粒子动画生效 */
   animation_speed?: number;
-}
-
-export interface TranslateResult {
-  text: string;
-  provider: string;
 }

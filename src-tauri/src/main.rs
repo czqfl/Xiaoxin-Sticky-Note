@@ -4,7 +4,6 @@
 use base64::Engine;
 use chrono::TimeZone;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
@@ -397,15 +396,6 @@ fn new_note_id() -> String {
 #[serde(default)]
 struct Settings {
     shortcuts: HashMap<String, String>,
-    translation_provider: String,
-    /// 输入含中文时，翻译目标语种
-    target_when_cjk: String,
-    /// 输入为非中文（英文等）时，翻译目标语种
-    target_when_latin: String,
-    baidu_appid: String,
-    baidu_key: String,
-    youdao_appkey: String,
-    youdao_secret: String,
     /// Markdown 预览主题：default / github / rose-pine / solarized / custom
     md_theme: String,
     /// 自定义主题 CSS 文件在磁盘上的绝对路径（md_theme === "custom" 时生效）
@@ -442,9 +432,6 @@ struct Settings {
     /// 大模型模型名（可空；空 = gpt-4o-mini）
     #[serde(default)]
     llm_model: String,
-    /// 翻译结果命名风格：default / snake / camel / snake_abbr / camel_abbr
-    #[serde(default)]
-    translate_format: String,
     /// 独立“毛玻璃效果”开关：开启后便签内容面板叠加 backdrop-filter 磨砂，
     /// 透明背景时磨砂桌面、背景图片时磨砂背景图（兼容两种模式）。
     #[serde(default = "default_true")]
@@ -505,19 +492,11 @@ impl Default for Settings {
         shortcuts.insert("bg_color".into(), "Ctrl+Shift+B".into());
         shortcuts.insert("size_up".into(), "Ctrl+Plus".into());
         shortcuts.insert("size_down".into(), "Ctrl+Minus".into());
-        shortcuts.insert("translate".into(), "Ctrl+Shift+T".into());
         shortcuts.insert("show_app".into(), "Ctrl+O".into());
         shortcuts.insert("close_all".into(), "Ctrl+Shift+X".into());
         shortcuts.insert("new_note".into(), "Ctrl+Shift+N".into());
         Settings {
             shortcuts,
-            translation_provider: "mymemory".into(),
-            target_when_cjk: "en".into(),
-            target_when_latin: "zh".into(),
-            baidu_appid: String::new(),
-            baidu_key: String::new(),
-            youdao_appkey: String::new(),
-            youdao_secret: String::new(),
             md_theme: "default".into(),
             md_custom_path: String::new(),
             md_custom_filename: String::new(),
@@ -531,7 +510,6 @@ impl Default for Settings {
             llm_base_url: String::new(),
             llm_api_key: String::new(),
             llm_model: String::new(),
-            translate_format: "default".into(),
             glass_enabled: true,
             glass_blur: 16.0,
             transparent_opacity: 65.0,
@@ -877,21 +855,6 @@ fn open_folder(path: String) -> Result<(), String> {
     Ok(())
 }
 
-// ===== 翻译 =====
-
-#[derive(Debug, Serialize)]
-struct TranslateOut {
-    text: String,
-    provider: String,
-}
-
-fn now_ms() -> u128 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-}
-
 /// RFC3986 非保留字符原样保留，其余按 UTF-8 字节做百分号编码（用于 GET 查询参数）
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -904,235 +867,6 @@ fn urlencode(s: &str) -> String {
         }
     }
     out
-}
-
-fn has_cjk(s: &str) -> bool {
-    s.chars().any(|c| {
-        let u = c as u32;
-        (0x4E00..=0x9FFF).contains(&u) || (0x3000..=0x303F).contains(&u) || (0xFF00..=0xFFEF).contains(&u)
-    })
-}
-
-/// 简单语种对推断：含中文则 zh->target，否则 target->zh
-fn detect_pair(text: &str, target: &str) -> (String, String) {
-    if has_cjk(text) {
-        ("zh".to_string(), target.to_string())
-    } else {
-        (target.to_string(), "zh".to_string())
-    }
-}
-
-/// 纯 Rust 实现的 MD5（百度翻译签名需要），返回小写十六进制串
-fn md5_hex(input: &[u8]) -> String {
-    let mut msg = input.to_vec();
-    let orig_len_bits = (msg.len() as u64).wrapping_mul(8);
-    msg.push(0x80);
-    while msg.len() % 64 != 56 {
-        msg.push(0);
-    }
-    msg.extend_from_slice(&orig_len_bits.to_le_bytes());
-
-    let s: [u32; 64] = [
-        7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
-        5, 9, 14, 20, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 6, 10, 15, 21, 6, 10, 15, 21,
-        6, 10, 15, 21, 6, 10, 15, 21,
-    ];
-    let k: [u32; 64] = [
-        0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
-        0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
-        0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
-        0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
-        0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
-        0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
-        0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
-        0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391,
-    ];
-
-    let mut a0: u32 = 0x67452301;
-    let mut b0: u32 = 0xefcdab89;
-    let mut c0: u32 = 0x98badcfe;
-    let mut d0: u32 = 0x10325476;
-
-    for chunk in msg.chunks(64) {
-        let mut m = [0u32; 16];
-        for i in 0..16 {
-            m[i] = u32::from_le_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1],
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
-        }
-        let (mut a, mut b, mut c, mut d) = (a0, b0, c0, d0);
-        for i in 0..64 {
-            let (f, g) = match i {
-                0..=15 => ((b & c) | ((!b) & d), i),
-                16..=31 => ((d & b) | ((!d) & c), (5 * i + 1) % 16),
-                32..=47 => (b ^ c ^ d, (3 * i + 5) % 16),
-                _ => (c ^ (b | (!d)), (7 * i) % 16),
-            };
-            let f = f
-                .wrapping_add(a)
-                .wrapping_add(k[i])
-                .wrapping_add(m[g]);
-            a = d;
-            d = c;
-            c = b;
-            b = b.wrapping_add(f.rotate_left(s[i]));
-        }
-        a0 = a0.wrapping_add(a);
-        b0 = b0.wrapping_add(b);
-        c0 = c0.wrapping_add(c);
-        d0 = d0.wrapping_add(d);
-    }
-
-    let mut out = [0u8; 16];
-    out[0..4].copy_from_slice(&a0.to_le_bytes());
-    out[4..8].copy_from_slice(&b0.to_le_bytes());
-    out[8..12].copy_from_slice(&c0.to_le_bytes());
-    out[12..16].copy_from_slice(&d0.to_le_bytes());
-    out.iter().map(|b| format!("{:02x}", b)).collect()
-}
-
-#[tauri::command]
-async fn translate(text: String, target: Option<String>) -> Result<TranslateOut, String> {
-    let settings = load_settings_inner();
-    let client = reqwest::Client::new();
-    // 目标语言：优先用前端传入的覆盖值（非 "auto"），否则按输入语种自动（中文->target_when_cjk，否则->target_when_latin）
-    let target = match target {
-        Some(t) if !t.is_empty() && t != "auto" => t,
-        _ => {
-            if has_cjk(&text) {
-                if settings.target_when_cjk.is_empty() {
-                    "en".to_string()
-                } else {
-                    settings.target_when_cjk.clone()
-                }
-            } else {
-                if settings.target_when_latin.is_empty() {
-                    "zh".to_string()
-                } else {
-                    settings.target_when_latin.clone()
-                }
-            }
-        }
-    };
-
-    match settings.translation_provider.as_str() {
-        "baidu" => {
-            if settings.baidu_appid.is_empty() || settings.baidu_key.is_empty() {
-                return Err("请先在设置中配置百度翻译的 AppID 与密钥".into());
-            }
-            let salt = now_ms().to_string();
-            let sign = md5_hex(
-                format!("{}{}{}{}", settings.baidu_appid, text, salt, settings.baidu_key).as_bytes(),
-            );
-            let params = [
-                ("q", text.as_str()),
-                ("from", "auto"),
-                ("to", target.as_str()),
-                ("appid", settings.baidu_appid.as_str()),
-                ("salt", salt.as_str()),
-                ("sign", sign.as_str()),
-            ];
-            let resp = client
-                .post("https://fanyi-api.baidu.com/api/trans/vip/translate")
-                .form(&params)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-            if let Some(msg) = body.get("error_msg").and_then(|v| v.as_str()) {
-                return Err(format!("百度翻译错误: {}", msg));
-            }
-            let translated = body["trans_result"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|o| o["dst"].as_str())
-                .unwrap_or("")
-                .to_string();
-            Ok(TranslateOut {
-                text: translated,
-                provider: "baidu".into(),
-            })
-        }
-        "youdao" => {
-            if settings.youdao_appkey.is_empty() || settings.youdao_secret.is_empty() {
-                return Err("请先在设置中配置有道翻译的 AppKey 与密钥".into());
-            }
-            let salt = now_ms().to_string();
-            let curtime = now_secs().to_string();
-            let input = if text.chars().count() <= 20 {
-                text.clone()
-            } else {
-                let head: String = text.chars().take(10).collect();
-                let tail: String = text.chars().rev().take(10).collect::<String>().chars().rev().collect();
-                format!("{}{}", head, tail)
-            };
-            let sign_raw = format!(
-                "{}{}{}{}{}",
-                settings.youdao_appkey, input, salt, curtime, settings.youdao_secret
-            );
-            let mut hasher = Sha256::new();
-            hasher.update(sign_raw.as_bytes());
-            let sign = format!("{:x}", hasher.finalize());
-            let params = [
-                ("q", text.as_str()),
-                ("from", "auto"),
-                ("to", target.as_str()),
-                ("appKey", settings.youdao_appkey.as_str()),
-                ("salt", salt.as_str()),
-                ("sign", sign.as_str()),
-                ("signType", "v3"),
-                ("curtime", curtime.as_str()),
-            ];
-            let resp = client
-                .post("https://openapi.youdao.com/api")
-                .form(&params)
-                .send()
-                .await
-                .map_err(|e| e.to_string())?;
-            let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-            if let Some(code) = body.get("errorCode").and_then(|v| v.as_str()) {
-                if code != "0" {
-                    return Err(format!("有道翻译错误: {}", code));
-                }
-            }
-            let translated = body["translation"]
-                .as_array()
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .to_string();
-            Ok(TranslateOut {
-                text: translated,
-                provider: "youdao".into(),
-            })
-        }
-        _ => {
-            // MyMemory：免密钥，开箱即用
-            let (from, to) = detect_pair(&text, &target);
-            let url = format!(
-                "https://api.mymemory.translated.net/get?q={}&langpair={}|{}",
-                urlencode(&text),
-                from,
-                to
-            );
-            let resp = client.get(&url).send().await.map_err(|e| e.to_string())?;
-            let body: serde_json::Value = resp.json().await.map_err(|e| e.to_string())?;
-            let translated = body["responseData"]["translatedText"]
-                .as_str()
-                .unwrap_or("")
-                .to_string();
-            if translated.is_empty() {
-                return Err("翻译失败，请稍后重试".into());
-            }
-            Ok(TranslateOut {
-                text: translated,
-                provider: "mymemory".into(),
-            })
-        }
-    }
 }
 
 /// 用大模型（OpenAI 兼容接口）整理便签文本格式。
@@ -2185,7 +1919,6 @@ fn main() {
             new_note_id,
             load_settings,
             save_settings,
-            translate,
             format_with_llm,
             start_dragging,
             set_always_on_top,

@@ -297,8 +297,7 @@ body,
   will-change: filter;
 }
 .note-window.has-bg .titlebar,
-.note-window.has-bg .editor-area,
-.note-window.has-bg .translate-panel {
+.note-window.has-bg .editor-area {
   position: relative;
   z-index: 1;
 }
@@ -453,8 +452,7 @@ body,
 /* 背景沉浸：整张便签（标题栏/工具栏/输入区/翻译区）全部透明显示背景，而非仅输入区 */
 .note-window.has-bg.bg-immersive .titlebar,
 .note-window.has-bg.bg-immersive .toolbar,
-.note-window.has-bg.bg-immersive .editor-area,
-.note-window.has-bg.bg-immersive .translate-panel {
+.note-window.has-bg.bg-immersive .editor-area {
   background: transparent;
 }
 
@@ -487,11 +485,8 @@ body,
    模糊由背景图的 CSS filter 完成（GPU 合成），网页侧不叠加任何 backdrop-filter */
 .note-window.bg-transparent .titlebar,
 .note-window.bg-transparent .toolbar,
-.note-window.bg-transparent .translate-panel,
 .note-window.bg-transparent .tool-md,
-.note-window.bg-transparent .tool-format,
-.note-window.bg-transparent .translate-src,
-.note-window.bg-transparent .translate-dst {
+.note-window.bg-transparent .tool-format {
   background: color-mix(in srgb, var(--bg-bar) calc(var(--trans-opacity, 65) * 1%), transparent);
   border-color: rgba(255, 255, 255, 0.16);
   /* 不叠加 backdrop-filter：模糊由 DWM 提供，控件纯半透明叠上去即可，
@@ -521,8 +516,7 @@ body,
   background: color-mix(in srgb, var(--bg) calc(var(--trans-opacity, 65) * 1%), transparent);
 }
 .note-window.bg-transparent .titlebar,
-.note-window.bg-transparent .editor-area,
-.note-window.bg-transparent .translate-panel {
+.note-window.bg-transparent .editor-area {
   position: relative;
   z-index: 1;
 }
@@ -1351,9 +1345,8 @@ body,
   background: var(--text-hint);
 }
 
-/* 编辑区/译文区图片：宽度贴合便签（不超过内容区宽度），高度等比缩放；圆角 + 手型提示可双击放大 */
-.editor img,
-.translate-dst img {
+/* 编辑区图片：宽度贴合便签（不超过内容区宽度），高度等比缩放；圆角 + 手型提示可双击放大 */
+.editor img {
   max-width: 100%;
   height: auto;
   display: block;
@@ -1630,263 +1623,6 @@ body,
 .icon-btn.gear:hover {
   background: var(--bg-hover);
   color: #4f86c6;
-}
-
-/* ===== 翻译框（底部，可拖动调高）===== */
-.translate-panel {
-  flex: none;
-  display: flex;
-  flex-direction: column;
-  background: var(--bg-bar);
-  border-top: 1px solid var(--border);
-  height: 150px;
-  max-height: 70%;
-}
-
-/* 翻译开关关闭时隐藏整个翻译区 */
-.translate-panel.hidden {
-  display: none;
-}
-
-.translate-resizer {
-  flex: none;
-  height: 7px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: ns-resize;
-  background: var(--bg-bar);
-  border-bottom: 1px solid var(--border);
-}
-
-.resizer-grip {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  transition: opacity 0.12s ease;
-}
-.resizer-grip .rd {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-hint);
-  opacity: 0.5;
-}
-.translate-resizer:hover .resizer-grip .rd {
-  background: var(--accent);
-  opacity: 0.85;
-}
-
-/* 右下角自定义缩放手柄：替代系统 resize 边框（避免透明窗口白屏 / 投影边框）。
-   尺寸刻意做小（命中区 14px、图标 11px），仅在悬停 / 拖拽时提亮，平时低调不抢眼。 */
-.win-resizer {
-  position: absolute;
-  right: 0;
-  bottom: 0;
-  width: 14px;
-  height: 14px;
-  display: flex;
-  align-items: flex-end;
-  justify-content: flex-end;
-  padding: 2px;
-  cursor: nwse-resize;
-  z-index: 30;
-  color: var(--text-hint);
-  opacity: 0.5;
-  transition: opacity 0.12s ease, color 0.12s ease;
-  touch-action: none; /* 触屏 / 笔不触发滚动，保证 pointer 拖拽缩放生效 */
-}
-.win-resizer:hover,
-.win-resizer:active {
-  opacity: 0.95;
-  color: var(--accent);
-}
-.win-resizer-grip {
-  display: block;
-  pointer-events: none; /* 让 pointer 事件落到 .win-resizer 本身 */
-}
-
-.translate-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-}
-
-.translate-title {
-  flex: 1;
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-sub);
-}
-
-/* 翻译区目标语言下拉（放头部，便于随时切换） */
-.tr-target {
-  height: 22px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text-sub);
-  font-size: 11px;
-  font-family: inherit;
-  padding: 0 4px;
-  cursor: pointer;
-  outline: none;
-  max-width: 96px;
-}
-
-/* 翻译体：占满面板剩余高度，输入框与译文框各占一半并随面板拉高而撑大 */
-.translate-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 0 10px 8px;
-  overflow: hidden;
-}
-
-.translate-src {
-  flex: 1 1 0;
-  min-height: 0;
-  width: 100%;
-  resize: none;
-  overflow: auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  font-size: 12px;
-  line-height: 1.4;
-  font-family: inherit;
-  padding: 4px 6px;
-  outline: none;
-  box-sizing: border-box;
-}
-
-.translate-src:focus {
-  border-color: var(--accent);
-}
-
-/* 译文结果：带边框文本框，与输入框同高填满；复制按钮在框内右上角 */
-.translate-dst-box {
-  position: relative;
-  flex: 1 1 0;
-  min-height: 0;
-  width: 100%;
-  display: flex;
-  box-sizing: border-box;
-}
-
-.translate-dst {
-  flex: 1;
-  width: 100%;
-  box-sizing: border-box;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--text);
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow: auto;
-  padding: 6px 30px 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg);
-  box-shadow: inset 0 0 0 1px rgba(107, 159, 217, 0.04);
-}
-
-.translate-dst::-webkit-scrollbar {
-  width: 5px;
-}
-
-.translate-dst::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
-}
-
-.translate-dst.loading {
-  color: var(--text-hint);
-  font-style: italic;
-}
-
-/* 译文框可编辑：聚焦时高亮边框，空内容时显示占位符 */
-.translate-dst[contenteditable="true"] {
-  cursor: text;
-  outline: none;
-}
-.translate-dst[contenteditable="true"]:focus {
-  border-color: var(--accent);
-  box-shadow: inset 0 0 0 1px var(--accent);
-}
-.translate-dst:empty:before {
-  content: attr(data-placeholder);
-  color: var(--text-hint);
-  pointer-events: none;
-}
-
-/* 翻译格式按钮 + 弹出菜单（复用 .fmt-menu 外观，向上弹出避免被窗口底边裁切）*/
-.tr-fmt-wrap {
-  position: relative;
-}
-.tr-fmt-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  height: 26px;
-  padding: 0 8px;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--text-sub);
-  background: var(--bg-hover);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.tr-fmt-btn:hover {
-  color: var(--text);
-  background: var(--bg-active);
-}
-.tr-fmt-btn.active {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-.tr-fmt-menu {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  margin-bottom: 6px;
-  min-width: 132px;
-}
-.tr-fmt-menu {
-  width: max-content;
-}
-.tr-fmt-menu .fmt-menu-item {
-  font-size: 12px;
-  padding: 6px 10px;
-  white-space: nowrap;
-}
-.tr-fmt-menu.hidden {
-  display: none;
-}
-.tr-fmt-menu .fmt-menu-item.active {
-  color: var(--accent);
-  font-weight: 600;
-}
-.tr-fmt-menu .fmt-menu-item.active::after {
-  content: " ✓";
-}
-
-.btn-copy {
-  position: absolute;
-  top: 3px;
-  right: 3px;
-  height: 22px;
-  width: 22px;
-  font-size: 12px;
-  border-radius: 5px;
-  background: rgba(255, 255, 255, 0.7);
 }
 
 /* 深色主题下复制按钮改为半透明白底，避免浅色方块突兀 */
@@ -2412,40 +2148,6 @@ body,
 
 .btn-primary:hover {
   background: #5b8fce;
-}
-
-/* ===== 编辑器右键菜单 ===== */
-.ctx-menu {
-  position: fixed;
-  z-index: 2000;
-  min-width: 140px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-  padding: 4px;
-  user-select: none;
-}
-
-.ctx-item {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  border: none;
-  background: transparent;
-  border-radius: 5px;
-  color: var(--text);
-  cursor: pointer;
-  font-size: 12px;
-  font-family: inherit;
-  padding: 6px 10px;
-  text-align: left;
-}
-
-.ctx-item:hover {
-  background: var(--bg-hover);
-  color: var(--accent);
 }
 
 /* ===== 图片预览独立窗口（label=imageviewer）===== */

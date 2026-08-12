@@ -132,30 +132,9 @@ export const SHORTCUT_ACTIONS: { key: string; label: string }[] = [
   { key: "bg_color", label: "字体背景色" },
   { key: "size_up", label: "增大字号" },
   { key: "size_down", label: "减小字号" },
-  { key: "translate", label: "翻译" },
   { key: "show_app", label: "呼出便签（全局）" },
   { key: "close_all", label: "全部关闭（全局）" },
   { key: "new_note", label: "新建便签（全局）" },
-];
-
-export const PROVIDERS: { value: string; label: string }[] = [
-  { value: "mymemory", label: "MyMemory（免密钥，开箱即用）" },
-  { value: "baidu", label: "百度翻译" },
-  { value: "youdao", label: "有道翻译" },
-];
-
-export const TARGET_LANGUAGES: { value: string; label: string }[] = [
-  { value: "zh", label: "中文" },
-  { value: "en", label: "英文" },
-  { value: "ja", label: "日文" },
-  { value: "ko", label: "韩文" },
-  { value: "fr", label: "法文" },
-  { value: "de", label: "德文" },
-  { value: "es", label: "西班牙文" },
-  { value: "ru", label: "俄文" },
-  { value: "it", label: "意大利文" },
-  { value: "pt", label: "葡萄牙文" },
-  { value: "ar", label: "阿拉伯文" },
 ];
 
 /** 把存储的毛玻璃强度统一规范为 0~100 的整数百分比。
@@ -195,10 +174,6 @@ export async function getSettings(): Promise<Settings> {
 /** 同步读取快捷键，设置未加载完时返回空串 */
 export function getShortcut(action: string): string {
   return cached?.shortcuts?.[action] ?? "";
-}
-
-export function getProviderLabel(value: string): string {
-  return PROVIDERS.find((p) => p.value === value)?.label.split("（")[0] ?? value;
 }
 
 // 所有便签窗口（独立 webview）共享同一份设置缓存；任一窗口修改设置后都会注册
@@ -341,9 +316,6 @@ function defaultSettings(): Settings {
   return {
     theme: "light",
     shortcuts: {},
-    translation_provider: "mymemory",
-    target_when_cjk: "en",
-    target_when_latin: "zh",
     md_theme: "default",
     edge_snap: true,
     bg_immersive: false,
@@ -434,32 +406,6 @@ export async function openSettingsModal(): Promise<void> {
               <h3 class="settings-h3">快捷键</h3>
               <p class="settings-tip">点击"录制"后按下组合键，电脑会实时识别，再点"确定"录入。</p>
               <div class="shortcut-list" id="shortcut-list"></div>
-            </div>
-          </section>
-
-          <section class="settings-pane active" id="pane-translate">
-            <div class="settings-section">
-              <h3 class="settings-h3">翻译</h3>
-              <div class="settings-row">
-                <label class="settings-label">翻译方式</label>
-                <select class="settings-select" id="set-provider"></select>
-              </div>
-              <div id="provider-keys"></div>
-            </div>
-          </section>
-
-          <section class="settings-pane active" id="pane-lang">
-            <div class="settings-section">
-              <h3 class="settings-h3">自动语言方向</h3>
-              <p class="settings-tip">目标语言选"自动"时按输入语种自动选目标；翻译时也可在翻译区直接选指定语言。</p>
-              <div class="settings-row">
-                <label class="settings-label">中文译为</label>
-                <select class="settings-select" id="set-target-cjk"></select>
-              </div>
-              <div class="settings-row">
-                <label class="settings-label">外文译为</label>
-                <select class="settings-select" id="set-target-latin"></select>
-              </div>
             </div>
           </section>
 
@@ -698,70 +644,6 @@ export async function openSettingsModal(): Promise<void> {
     });
   });
 
-  // ---- 翻译方式 + 密钥 ----
-  const providerSel = overlay.querySelector("#set-provider") as HTMLSelectElement;
-  const keysBox = overlay.querySelector("#provider-keys") as HTMLDivElement;
-
-  PROVIDERS.forEach((p) => {
-    const opt = document.createElement("option");
-    opt.value = p.value;
-    opt.textContent = p.label;
-    providerSel.appendChild(opt);
-  });
-  providerSel.value = draft.translation_provider;
-
-  function renderKeys() {
-    const v = providerSel.value;
-    if (v === "baidu") {
-      keysBox.innerHTML = `
-        <div class="settings-row">
-          <label class="settings-label">AppID</label>
-          <input class="settings-input" id="k-baidu-appid" value="${draft.baidu_appid}">
-        </div>
-        <div class="settings-row">
-          <label class="settings-label">密钥</label>
-          <input class="settings-input" id="k-baidu-key" type="password" value="${draft.baidu_key}">
-        </div>`;
-    } else if (v === "youdao") {
-      keysBox.innerHTML = `
-        <div class="settings-row">
-          <label class="settings-label">AppKey</label>
-          <input class="settings-input" id="k-youdao-appkey" value="${draft.youdao_appkey}">
-        </div>
-        <div class="settings-row">
-          <label class="settings-label">密钥</label>
-          <input class="settings-input" id="k-youdao-secret" type="password" value="${draft.youdao_secret}">
-        </div>`;
-    } else {
-      keysBox.innerHTML = `<p class="settings-tip">MyMemory 无需密钥，直接可用。</p>`;
-    }
-  }
-  providerSel.addEventListener("change", renderKeys);
-  renderKeys();
-
-  // ---- 自动语言方向 ----
-  const targetCjkSel = overlay.querySelector("#set-target-cjk") as HTMLSelectElement;
-  const targetLatinSel = overlay.querySelector("#set-target-latin") as HTMLSelectElement;
-
-  function fillLangSelect(sel: HTMLSelectElement, value: string) {
-    TARGET_LANGUAGES.forEach((l) => {
-      const opt = document.createElement("option");
-      opt.value = l.value;
-      opt.textContent = l.label;
-      sel.appendChild(opt);
-    });
-    // 已存值不在列表里时补一个选项，避免丢失
-    if (value && !TARGET_LANGUAGES.some((l) => l.value === value)) {
-      const opt = document.createElement("option");
-      opt.value = value;
-      opt.textContent = value;
-      sel.appendChild(opt);
-    }
-    sel.value = value || "en";
-  }
-  fillLangSelect(targetCjkSel, draft.target_when_cjk);
-  fillLangSelect(targetLatinSel, draft.target_when_latin);
-
   // ---- Markdown 主题 ----
   const mdThemeSel = overlay.querySelector("#set-md-theme") as HTMLSelectElement;
   const mdCustomRow = overlay.querySelector("#md-custom-row") as HTMLElement;
@@ -842,9 +724,6 @@ export async function openSettingsModal(): Promise<void> {
   themeSel.value = draft.theme || "light";
 
   // 用自定义皮肤包裹原生下拉，使选项列表背景跟随主题（原生 <option> 在 WebView2 下永远白底）
-  enhanceSelect(providerSel);
-  enhanceSelect(targetCjkSel);
-  enhanceSelect(targetLatinSel);
   enhanceSelect(mdThemeSel);
   enhanceSelect(themeSel);
 
@@ -1294,16 +1173,6 @@ export async function openSettingsModal(): Promise<void> {
 
   // ---- 应用（原“保存”）：点击立即生效配置，但面板保持打开，可连续调整对比 ——
   (overlay.querySelector("#set-save") as HTMLButtonElement).addEventListener("click", async () => {
-    draft.translation_provider = providerSel.value;
-    if (draft.translation_provider === "baidu") {
-      draft.baidu_appid = (overlay.querySelector("#k-baidu-appid") as HTMLInputElement)?.value ?? "";
-      draft.baidu_key = (overlay.querySelector("#k-baidu-key") as HTMLInputElement)?.value ?? "";
-    } else if (draft.translation_provider === "youdao") {
-      draft.youdao_appkey = (overlay.querySelector("#k-youdao-appkey") as HTMLInputElement)?.value ?? "";
-      draft.youdao_secret = (overlay.querySelector("#k-youdao-secret") as HTMLInputElement)?.value ?? "";
-    }
-    draft.target_when_cjk = targetCjkSel.value;
-    draft.target_when_latin = targetLatinSel.value;
     draft.md_theme = mdThemeSel.value;
     draft.theme = themeSel.value;
     draft.edge_snap = edgeSnapChk.checked;

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { NoteData, NoteMeta, Settings, TranslateResult } from "./types";
+import { NoteData, NoteMeta, Settings } from "./types";
 
 /** 关闭当前窗口（用于独立“设置”窗口的关闭/保存后退出）。 */
 export async function getCurrent(): Promise<{ destroy(): Promise<void> }> {
@@ -108,10 +108,6 @@ export async function readMdCustom(): Promise<string> {
 /** 用系统默认程序打开指定文件 */
 export async function openFile(path: string): Promise<void> {
   return invoke("open_file", { path });
-}
-
-export async function translate(text: string, target: string): Promise<TranslateResult> {
-  return invoke<TranslateResult>("translate", { text, target });
 }
 
 /** 用大模型整理便签文本格式。outputFormat = "md" 返回 Markdown，其它返回纯文本。 */
